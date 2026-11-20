@@ -1,0 +1,20 @@
+{
+  "appId": "com.inayafashion.admin",
+  "appName": "Inaya Admin",
+  "webDir": "dist",
+  "server": {
+    "url": "https://demosite.com/admin",
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_inaya",
+      "iconColor": "#9E7B42"
+    },
+    "SplashScreen": {
+      "launchShowDuration": 1200,
+      "backgroundColor": "#121110",
+      "showSpinner": false
+    }
+  }
+}

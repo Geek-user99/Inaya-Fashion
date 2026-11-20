@@ -13,21 +13,21 @@ jobs:
     name: Build & Deploy Web Storefront
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
-        uses: setup-node@v4
+        uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install --no-audit --no-fund
 
       - name: Type-check & Build Production Bundle
         env:
-          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || 'https://mtngwbrcywmmxfwrumxb.supabase.co' }}
-          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || 'sb_publishable_NWI2NHZk2lbI9HW9Qh0S0Q_TxR_WyEE' }}
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
         run: |
           npm run lint
           npm run build
@@ -38,30 +38,33 @@ jobs:
           name: web-dist
           path: dist/
 
-      # Deploy to Vercel automatically when VERCEL_TOKEN is set in GitHub Secrets
-      - name: Deploy to Vercel
-        if: ${{ secrets.VERCEL_TOKEN != '' }}
+      - name: Deploy to Vercel or Trigger Host Webhook (if configured)
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          DEPLOY_WEBHOOK_URL: ${{ secrets.DEPLOY_WEBHOOK_URL }}
         run: |
-          npx vercel --prod --token=${{ secrets.VERCEL_TOKEN }} --yes
-
-      # Or trigger Render / Railway Deploy Hook URL if using a Node host for Express + APIs
-      - name: Trigger Server Deploy Hook (Render / Railway / VPS)
-        if: ${{ secrets.DEPLOY_WEBHOOK_URL != '' }}
-        run: |
-          curl -fsSL -X POST "${{ secrets.DEPLOY_WEBHOOK_URL }}"
+          if [ -n "$VERCEL_TOKEN" ]; then
+            echo "Deploying to Vercel..."
+            npx vercel --prod --token="$VERCEL_TOKEN" --yes
+          elif [ -n "$DEPLOY_WEBHOOK_URL" ]; then
+            echo "Triggering server deploy webhook..."
+            curl -fsSL -X POST "$DEPLOY_WEBHOOK_URL"
+          else
+            echo "No deployment secret set yet — skipping remote deploy step (build succeeded)."
+          fi
 
   build-admin-apk:
     name: Build Inaya Admin Android APK
     needs: build-and-deploy-web
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Setup Java 17
         uses: actions/setup-java@v4
@@ -75,29 +78,57 @@ jobs:
           name: web-dist
           path: dist/
 
-      - name: Install Capacitor & Native Plugins
+      - name: Install Capacitor & Android Plugins
         run: |
-          npm ci
-          npm install @capacitor/core @capacitor/cli @capacitor/android @capacitor/local-notifications @capacitor-community/bluetooth-le
+          npm install --no-audit --no-fund
+          npm install --no-save @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/local-notifications@6 @capacitor-community/bluetooth-le@6
 
-      - name: Initialize Android Project & Sync
+      - name: Configure Admin URL & Sync Android Project
         env:
-          CAPACITOR_ADMIN_URL: ${{ secrets.CAPACITOR_ADMIN_URL || 'https://demosite.com/admin' }}
+          CAPACITOR_ADMIN_URL: ${{ secrets.CAPACITOR_ADMIN_URL }}
         run: |
+          node -e '
+            const fs = require("fs");
+            const cfg = JSON.parse(fs.readFileSync("capacitor.config.json", "utf8"));
+            if (process.env.CAPACITOR_ADMIN_URL) {
+              cfg.server.url = process.env.CAPACITOR_ADMIN_URL;
+              cfg.server.cleartext = process.env.CAPACITOR_ADMIN_URL.startsWith("http://");
+            }
+            fs.writeFileSync("capacitor.config.json", JSON.stringify(cfg, null, 2));
+            console.log("Capacitor server.url =", cfg.server.url);
+          '
           if [ ! -d "android" ]; then
             npx cap add android
           fi
-          mkdir -p android/app/src/main/res/mipmap-xxxhdpi android/app/src/main/res/mipmap-xxhdpi
-          cp public/pwa-512x512.png android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png || true
-          cp public/pwa-192x192.png android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png || true
+          for dir in mipmap-hdpi mipmap-xhdpi mipmap-xxhdpi mipmap-xxxhdpi; do
+            mkdir -p "android/app/src/main/res/$dir"
+            cp public/pwa-512x512.png "android/app/src/main/res/$dir/ic_launcher.png"
+            cp public/pwa-512x512.png "android/app/src/main/res/$dir/ic_launcher_round.png"
+          done
           npx cap sync android
 
       - name: Grant Android Bluetooth & Notification Permissions
         run: |
-          MANIFEST="android/app/src/main/AndroidManifest.xml"
-          if ! grep -q "BLUETOOTH_CONNECT" "$MANIFEST"; then
-            sed -i 's/<uses-permission android:name="android.permission.INTERNET" \/>/<uses-permission android:name="android.permission.INTERNET" \/>\n    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" \/>\n    <uses-permission android:name="android.permission.BLUETOOTH" \/>\n    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" \/>\n    <uses-permission android:name="android.permission.BLUETOOTH_SCAN" \/>\n    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" \/>/' "$MANIFEST"
-          fi
+          node -e '
+            const fs = require("fs");
+            const file = "android/app/src/main/AndroidManifest.xml";
+            let xml = fs.readFileSync(file, "utf8");
+            const perms = [
+              "android.permission.POST_NOTIFICATIONS",
+              "android.permission.BLUETOOTH",
+              "android.permission.BLUETOOTH_ADMIN",
+              "android.permission.BLUETOOTH_SCAN",
+              "android.permission.BLUETOOTH_CONNECT"
+            ];
+            const toInsert = perms
+              .filter((p) => !xml.includes(p))
+              .map((p) => `    <uses-permission android:name="${p}" />`)
+              .join("\n");
+            if (toInsert) {
+              xml = xml.replace("<application", `${toInsert}\n\n    <application`);
+              fs.writeFileSync(file, xml);
+            }
+          '
 
       - name: Build Android APK
         run: |
@@ -118,4 +149,5 @@ jobs:
           tag_name: admin-apk-latest
           name: Inaya Fashion Admin APK (Latest)
           files: Inaya-Admin.apk
-          body: "Automatically built Android APK pointing to your live /admin panel with native notifications and Bluetooth thermal printer support."
+          make_latest: true
+          body: "Automatically built Android APK pointing to your /admin panel with native notifications and Bluetooth thermal printer support."
