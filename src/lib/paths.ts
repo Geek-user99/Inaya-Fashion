@@ -2,8 +2,9 @@ const rawBase = (import.meta.env.BASE_URL || '/').replace(/\/$/, '');
 
 export function getBasePath(): string {
   if (rawBase && rawBase !== '/') return rawBase;
-  if (typeof window !== 'undefined' && window.location.pathname.startsWith('/Inaya_Fashion')) {
-    return '/Inaya_Fashion';
+  if (typeof window !== 'undefined') {
+    if (window.location.pathname.startsWith('/Inaya-Fashion')) return '/Inaya-Fashion';
+    if (window.location.pathname.startsWith('/Inaya_Fashion')) return '/Inaya_Fashion';
   }
   return '';
 }

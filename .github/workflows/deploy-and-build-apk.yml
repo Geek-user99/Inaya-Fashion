@@ -28,8 +28,11 @@ jobs:
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
-          VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH || '/Inaya_Fashion/' }}
+          VITE_BASE_PATH_OVERRIDE: ${{ vars.VITE_BASE_PATH }}
         run: |
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          export VITE_BASE_PATH="${VITE_BASE_PATH_OVERRIDE:-/${REPO_NAME}/}"
+          echo "Building with VITE_BASE_PATH=$VITE_BASE_PATH"
           npm run lint
           npm run build
           cp dist/index.html dist/404.html
@@ -93,14 +96,18 @@ jobs:
 
       - name: Configure Admin URL & Sync Android Project
         env:
-          CAPACITOR_ADMIN_URL: ${{ secrets.CAPACITOR_ADMIN_URL || 'https://geek-user99.github.io/Inaya_Fashion/admin' }}
+          CAPACITOR_ADMIN_URL: ${{ secrets.CAPACITOR_ADMIN_URL }}
         run: |
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
+          OWNER_LOWER="$(echo "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')"
+          export TARGET_ADMIN_URL="${CAPACITOR_ADMIN_URL:-https://${OWNER_LOWER}.github.io/${REPO_NAME}/admin}"
           node -e '
             const fs = require("fs");
             const cfg = JSON.parse(fs.readFileSync("capacitor.config.json", "utf8"));
-            if (process.env.CAPACITOR_ADMIN_URL) {
-              cfg.server.url = process.env.CAPACITOR_ADMIN_URL;
-              cfg.server.cleartext = process.env.CAPACITOR_ADMIN_URL.startsWith("http://");
+            const targetUrl = process.env.TARGET_ADMIN_URL;
+            if (targetUrl) {
+              cfg.server.url = targetUrl;
+              cfg.server.cleartext = targetUrl.startsWith("http://");
             }
             fs.writeFileSync("capacitor.config.json", JSON.stringify(cfg, null, 2));
             console.log("Capacitor server.url =", cfg.server.url);
@@ -158,4 +165,4 @@ jobs:
           name: Inaya Fashion Admin APK (Latest)
           files: Inaya-Admin.apk
           make_latest: true
-          body: "Automatically built Android APK pointing to https://geek-user99.github.io/Inaya_Fashion/admin with native notifications and Bluetooth thermal printer support."
+          body: "Automatically built Android APK pointing to https://geek-user99.github.io/Inaya-Fashion/admin with native notifications and Bluetooth thermal printer support."
