@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Minus, Plus, ShoppingBag, Trash2, X, CheckCircle2, ArrowRight, Truck } from 'lucide-react';
 import type { CartItem, Order, PublicSettings } from '../types';
 import { trackMetaEvent } from '../lib/metaPixel';
+import { apiUrl, resolveAssetUrl } from '../lib/paths';
 
 interface CartDrawerProps {
   open: boolean;
@@ -66,7 +67,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
     if (!couponInput.trim()) return;
     setValidatingCoupon(true);
     try {
-      const resp = await fetch('/api/coupons/validate', {
+      const resp = await fetch(apiUrl('/api/coupons/validate'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: couponInput.trim(), subtotal }),
@@ -104,7 +105,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
     setSubmitting(true);
     try {
       const eventId = `order-${Date.now()}`;
-      const resp = await fetch('/api/orders', {
+      const resp = await fetch(apiUrl('/api/orders'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -209,7 +210,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
                     {items.map((item, idx) => (
                       <div key={`${item.productId}-${item.size}-${item.color}`} className="py-4 flex gap-4">
                         <img
-                          src={item.image}
+                          src={resolveAssetUrl(item.image)}
                           alt={item.name}
                           referrerPolicy="no-referrer"
                           className="w-20 h-26 object-cover rounded-lg bg-[#EFECE5] dark:bg-[#1F1D19] shrink-0"

@@ -46,6 +46,8 @@ import { BrandLogo } from './BrandLogo';
 import { PWAInstallButton } from './PWAInstallButton';
 import { AdminProductModal } from './AdminProductModal';
 import { BarcodeLabelModal } from './BarcodeLabelModal';
+import { apiUrl, resolveAssetUrl } from '../lib/paths';
+import { fetchAdminBootstrapSupabaseFallback, tryExpressApi } from '../lib/fallbackStorefront';
 
 type AdminTab = 'orders' | 'products' | 'categories' | 'marketing' | 'system';
 
@@ -62,15 +64,12 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   onExitToStore,
   onStorefrontDataChanged,
 }) => {
-  const [authToken, setAuthToken] = useState<string>(() => localStorage.getItem('inaya_admin_token') || '');
-  const [authMode, setAuthMode] = useState<'supabase' | 'passcode'>('supabase');
+  const [authToken, setAuthToken] = useState<string>('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [passcode, setPasscode] = useState('');
   const [authError, setAuthError] = useState('');
   const [loggingIn, setLoggingIn] = useState(false);
-  const [passcodeAvailable, setPasscodeAvailable] = useState(true);
-  const [isPreviewMode, setIsPreviewMode] = useState(false);
+  const [staticHostNotice, setStaticHostNotice] = useState(false);
 
   const [activeTab, setActiveTab] = useState<AdminTab>('orders');
   const [loading, setLoading] = useState(false);
@@ -124,35 +123,52 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   }, []);
 
   useEffect(() => {
-    fetch('/api/admin/auth/config')
-      .then((r) => r.json())
-      .then((d: { passcodeEnabled?: boolean; isPreviewMode?: boolean }) => {
-        setPasscodeAvailable(Boolean(d.passcodeEnabled));
-        setIsPreviewMode(Boolean(d.isPreviewMode));
-        if (d.isPreviewMode) setAuthMode('passcode');
-      })
-      .catch(() => undefined);
+    localStorage.removeItem('inaya_admin_token');
 
     supabase.auth.getSession().then(({ data }) => {
       if (data.session?.access_token) {
         setAuthToken(data.session.access_token);
-        localStorage.setItem('inaya_admin_token', data.session.access_token);
       }
     });
+
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthToken(session?.access_token || '');
+    });
+
+    return () => {
+      listener.subscription.unsubscribe();
+    };
   }, []);
 
   const loadBootstrap = useCallback(async () => {
     if (!authToken) return;
     setLoading(true);
     try {
-      const resp = await fetch('/api/admin/bootstrap', {
+      const resp = await tryExpressApi('/api/admin/bootstrap', {
         headers: { Authorization: `Bearer ${authToken}` },
       });
+
+      if (!resp) {
+        const fallback = await fetchAdminBootstrapSupabaseFallback();
+        setSettings(fallback.settings);
+        setCategories(fallback.categories);
+        setProducts(fallback.products);
+        setReviews(fallback.reviews);
+        setCoupons(fallback.coupons);
+        setOrders(fallback.orders);
+        setStaticHostNotice(true);
+        if (fallback.products[0] && !revProdId) {
+          setRevProdId(fallback.products[0].id);
+        }
+        return;
+      }
+
       if (resp.status === 401) {
-        localStorage.removeItem('inaya_admin_token');
+        await supabase.auth.signOut().catch(() => undefined);
         setAuthToken('');
         return;
       }
+
       const data = (await resp.json()) as {
         settings: AdminSettings;
         categories: Category[];
@@ -161,6 +177,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
         coupons: Coupon[];
         orders: Order[];
       };
+      setStaticHostNotice(false);
       setSettings(data.settings);
       setCategories(data.categories);
       setProducts(data.products);
@@ -183,10 +200,10 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     }
   }, [authToken, loadBootstrap]);
 
-  // Real-time SSE Order Notification Stream
+  // Real-time SSE Order Notification Stream (active when Express backend is connected)
   useEffect(() => {
-    if (!authToken) return;
-    const evtSource = new EventSource(`/api/admin/events?token=${encodeURIComponent(authToken)}`);
+    if (!authToken || staticHostNotice) return;
+    const evtSource = new EventSource(apiUrl(`/api/admin/events?token=${encodeURIComponent(authToken)}`));
     evtSource.addEventListener('new_order', (e) => {
       try {
         const payload = JSON.parse((e as MessageEvent).data) as {
@@ -203,7 +220,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
       }
     });
     return () => evtSource.close();
-  }, [authToken, loadBootstrap, showToast]);
+  }, [authToken, staticHostNotice, loadBootstrap, showToast]);
 
   const handleSupabaseLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -216,36 +233,12 @@ export const AdminApp: React.FC<AdminAppProps> = ({
         return;
       }
       setAuthToken(data.session.access_token);
-      localStorage.setItem('inaya_admin_token', data.session.access_token);
-    } finally {
-      setLoggingIn(false);
-    }
-  };
-
-  const handlePasscodeLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setAuthError('');
-    setLoggingIn(true);
-    try {
-      const resp = await fetch('/api/admin/auth/passcode', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ passcode }),
-      });
-      const data = (await resp.json()) as { token?: string; error?: string };
-      if (!resp.ok || !data.token) {
-        setAuthError(data.error || 'Incorrect passcode.');
-        return;
-      }
-      setAuthToken(data.token);
-      localStorage.setItem('inaya_admin_token', data.token);
     } finally {
       setLoggingIn(false);
     }
   };
 
   const handleSignOut = async () => {
-    localStorage.removeItem('inaya_admin_token');
     setAuthToken('');
     await supabase.auth.signOut().catch(() => undefined);
   };
@@ -253,7 +246,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   const handleSendToSteadfast = async (orderId: string) => {
     setSendingSteadfastId(orderId);
     try {
-      const resp = await fetch('/api/admin/steadfast/create-order', {
+      const resp = await fetch(apiUrl('/api/admin/steadfast/create-order'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -275,7 +268,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
   const handleSyncSteadfastStatus = async (orderId: string) => {
     try {
-      const resp = await fetch(`/api/admin/steadfast/status/${orderId}`, {
+      const resp = await fetch(apiUrl(`/api/admin/steadfast/status/${orderId}`), {
         headers: { Authorization: `Bearer ${authToken}` },
       });
       const data = (await resp.json()) as { order?: Order; delivery_status?: string; error?: string };
@@ -294,7 +287,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
   const handleFraudCheck = async (orderId: string, phone: string) => {
     try {
-      const resp = await fetch(`/api/admin/steadfast/fraud-check/${encodeURIComponent(phone)}`, {
+      const resp = await fetch(apiUrl(`/api/admin/steadfast/fraud-check/${encodeURIComponent(phone)}`), {
         headers: { Authorization: `Bearer ${authToken}` },
       });
       const data = (await resp.json()) as {
@@ -318,7 +311,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   };
 
   const handleOrderStatusChange = async (orderId: string, orderStatus: OrderStatus) => {
-    const resp = await fetch(`/api/admin/orders/${orderId}/status`, {
+    const resp = await fetch(apiUrl(`/api/admin/orders/${orderId}/status`), {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
@@ -340,7 +333,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     next.splice(targetIdx, 0, moved);
     const reindexed = next.map((p, i) => ({ ...p, displayOrder: i + 1 }));
     setProducts(reindexed);
-    await fetch('/api/admin/products/reorder', {
+    await fetch(apiUrl('/api/admin/products/reorder'), {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
@@ -352,7 +345,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   };
 
   const handleQuickToggleProduct = async (product: Product, field: 'comingSoon' | 'showOnHomepage') => {
-    const resp = await fetch(`/api/admin/products/${product.id}`, {
+    const resp = await fetch(apiUrl(`/api/admin/products/${product.id}`), {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -369,7 +362,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   };
 
   const handleDeleteProduct = async (id: string) => {
-    const resp = await fetch(`/api/admin/products/${id}`, {
+    const resp = await fetch(apiUrl(`/api/admin/products/${id}`), {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${authToken}` },
     });
@@ -385,7 +378,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     if (!catName.trim()) return;
     const url = editingCatId ? `/api/admin/categories/${editingCatId}` : '/api/admin/categories';
     const method = editingCatId ? 'PUT' : 'POST';
-    const resp = await fetch(url, {
+    const resp = await fetch(apiUrl(url), {
       method,
       headers: {
         'Content-Type': 'application/json',
@@ -404,7 +397,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   };
 
   const handleDeleteCategory = async (id: string) => {
-    const resp = await fetch(`/api/admin/categories/${id}`, {
+    const resp = await fetch(apiUrl(`/api/admin/categories/${id}`), {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${authToken}` },
     });
@@ -416,7 +409,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
   const handleCreateCoupon = async (e: React.FormEvent) => {
     e.preventDefault();
-    const resp = await fetch('/api/admin/coupons', {
+    const resp = await fetch(apiUrl('/api/admin/coupons'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -438,7 +431,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   };
 
   const handleDeleteCoupon = async (id: string) => {
-    const resp = await fetch(`/api/admin/coupons/${id}`, {
+    const resp = await fetch(apiUrl(`/api/admin/coupons/${id}`), {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${authToken}` },
     });
@@ -450,7 +443,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   const handleAddReview = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!revProdId || !revName.trim() || !revComment.trim()) return;
-    const resp = await fetch('/api/admin/reviews', {
+    const resp = await fetch(apiUrl('/api/admin/reviews'), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -474,7 +467,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   };
 
   const handleDeleteReview = async (id: string) => {
-    const resp = await fetch(`/api/admin/reviews/${id}`, {
+    const resp = await fetch(apiUrl(`/api/admin/reviews/${id}`), {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${authToken}` },
     });
@@ -495,7 +488,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     if (metaCapiTokenInput.trim()) payload.metaCapiToken = metaCapiTokenInput.trim();
     if (cloudinarySecretInput.trim()) payload.cloudinaryApiSecret = cloudinarySecretInput.trim();
 
-    const resp = await fetch('/api/admin/settings', {
+    const resp = await fetch(apiUrl('/api/admin/settings'), {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -518,7 +511,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   };
 
   const handleCheckBalance = async () => {
-    const resp = await fetch('/api/admin/steadfast/balance', {
+    const resp = await fetch(apiUrl('/api/admin/steadfast/balance'), {
       headers: { Authorization: `Bearer ${authToken}` },
     });
     const data = (await resp.json()) as { current_balance?: number; error?: string };
@@ -553,7 +546,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   };
 
   // ============================================================================
-  // LOGIN SCREEN
+  // LOGIN SCREEN (Supabase Auth Only)
   // ============================================================================
   if (!authToken) {
     return (
@@ -562,42 +555,9 @@ export const AdminApp: React.FC<AdminAppProps> = ({
           <div className="flex flex-col items-center text-center space-y-2">
             <BrandLogo subtitle="Merchant App" />
             <p className="text-xs text-[#6E6A63] dark:text-[#A39E93] pt-1">
-              Sign in with Supabase Auth to manage orders, Steadfast courier dispatch, thermal stickers & inventory.
+              Sign in with your Supabase Admin account to manage orders, Steadfast courier dispatch, thermal stickers & inventory.
             </p>
           </div>
-
-          {passcodeAvailable && (
-            <div className="grid grid-cols-2 p-1 rounded-xl bg-[#F2EFE8] dark:bg-[#1E1C18] text-xs font-medium">
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthMode('supabase');
-                  setAuthError('');
-                }}
-                className={`py-2 rounded-lg transition ${
-                  authMode === 'supabase'
-                    ? 'bg-white dark:bg-[#141311] shadow-sm text-[#171614] dark:text-[#F4F2EE]'
-                    : 'text-[#6E6A63] dark:text-[#A39E93]'
-                }`}
-              >
-                Supabase Account
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setAuthMode('passcode');
-                  setAuthError('');
-                }}
-                className={`py-2 rounded-lg transition ${
-                  authMode === 'passcode'
-                    ? 'bg-white dark:bg-[#141311] shadow-sm text-[#171614] dark:text-[#F4F2EE]'
-                    : 'text-[#6E6A63] dark:text-[#A39E93]'
-                }`}
-              >
-                Store Passcode
-              </button>
-            </div>
-          )}
 
           {authError && (
             <div className="p-3 rounded-xl bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 text-xs">
@@ -605,65 +565,37 @@ export const AdminApp: React.FC<AdminAppProps> = ({
             </div>
           )}
 
-          {authMode === 'supabase' ? (
-            <form onSubmit={handleSupabaseLogin} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium mb-1">Admin Email</label>
-                <input
-                  required
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="admin@inayafashion.com"
-                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-[#D8D2C7] dark:border-[#35322C] bg-transparent text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium mb-1">Password</label>
-                <input
-                  required
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-[#D8D2C7] dark:border-[#35322C] bg-transparent text-sm"
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={loggingIn}
-                className="w-full min-h-[46px] rounded-xl bg-[#171614] dark:bg-[#D9B675] text-white dark:text-[#121110] text-sm font-semibold"
-              >
-                {loggingIn ? 'Authenticating...' : 'Sign In with Supabase'}
-              </button>
-            </form>
-          ) : (
-            <form onSubmit={handlePasscodeLogin} className="space-y-4">
-              <div>
-                <label className="block text-xs font-medium mb-1">Store Access Passcode</label>
-                <input
-                  required
-                  type="password"
-                  value={passcode}
-                  onChange={(e) => setPasscode(e.target.value)}
-                  placeholder={isPreviewMode ? 'Preview passcode: inaya2026' : 'Enter ADMIN_PASSCODE'}
-                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-[#D8D2C7] dark:border-[#35322C] bg-transparent text-sm font-mono-tabular"
-                />
-                {isPreviewMode && (
-                  <p className="text-[11px] text-[#6E6A63] dark:text-[#A39E93] mt-1.5">
-                    Preview mode passcode: <code className="font-mono-tabular font-semibold">inaya2026</code> (disabled automatically in production unless configured).
-                  </p>
-                )}
-              </div>
-              <button
-                type="submit"
-                disabled={loggingIn}
-                className="w-full min-h-[46px] rounded-xl bg-[#171614] dark:bg-[#D9B675] text-white dark:text-[#121110] text-sm font-semibold"
-              >
-                {loggingIn ? 'Verifying...' : 'Open Admin App'}
-              </button>
-            </form>
-          )}
+          <form onSubmit={handleSupabaseLogin} className="space-y-4">
+            <div>
+              <label className="block text-xs font-medium mb-1">Admin Email</label>
+              <input
+                required
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="admin@inayafashion.com"
+                className="w-full min-h-[44px] px-3.5 rounded-xl border border-[#D8D2C7] dark:border-[#35322C] bg-transparent text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1">Password</label>
+              <input
+                required
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full min-h-[44px] px-3.5 rounded-xl border border-[#D8D2C7] dark:border-[#35322C] bg-transparent text-sm"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={loggingIn}
+              className="w-full min-h-[46px] rounded-xl bg-[#171614] dark:bg-[#D9B675] text-white dark:text-[#121110] text-sm font-semibold"
+            >
+              {loggingIn ? 'Authenticating...' : 'Sign In with Supabase'}
+            </button>
+          </form>
 
           <div className="pt-2 flex items-center justify-between text-xs text-[#6E6A63] dark:text-[#A39E93]">
             <button onClick={onExitToStore} className="hover:underline">
@@ -983,7 +915,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                       >
                         <div className="flex items-center gap-3.5 min-w-0">
                           <img
-                            src={prod.images[0]}
+                            src={resolveAssetUrl(prod.images[0] || '')}
                             alt={prod.name}
                             className="w-16 h-20 object-cover rounded-xl bg-[#EFECE5] shrink-0"
                           />

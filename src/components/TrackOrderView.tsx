@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { PackageSearch, Truck } from 'lucide-react';
 import type { OrderItem } from '../types';
+import { apiUrl } from '../lib/paths';
 
 interface TrackedOrderResult {
   invoice: string;
@@ -28,7 +29,7 @@ export const TrackOrderView: React.FC = () => {
     setError('');
     setResult(null);
     try {
-      const resp = await fetch(`/api/orders/track/${encodeURIComponent(query.trim())}`);
+      const resp = await fetch(apiUrl(`/api/orders/track/${encodeURIComponent(query.trim())}`));
       const data = (await resp.json()) as TrackedOrderResult & { error?: string };
       if (!resp.ok) {
         setError(data.error || 'Order not found.');

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Plus, Trash2, Upload, X, Image as ImageIcon } from 'lucide-react';
 import type { Category, ColorOption, Product, SizeOption } from '../types';
+import { apiUrl, resolveAssetUrl } from '../lib/paths';
 
 interface AdminProductModalProps {
   product: Product | null;
@@ -63,7 +64,7 @@ export const AdminProductModal: React.FC<AdminProductModalProps> = ({
         reader.readAsDataURL(file);
       });
 
-      const resp = await fetch('/api/admin/upload', {
+      const resp = await fetch(apiUrl('/api/admin/upload'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -112,7 +113,7 @@ export const AdminProductModal: React.FC<AdminProductModalProps> = ({
     try {
       const endpoint = product ? `/api/admin/products/${product.id}` : '/api/admin/products';
       const method = product ? 'PUT' : 'POST';
-      const resp = await fetch(endpoint, {
+      const resp = await fetch(apiUrl(endpoint), {
         method,
         headers: {
           'Content-Type': 'application/json',
@@ -310,7 +311,7 @@ export const AdminProductModal: React.FC<AdminProductModalProps> = ({
             <div className="flex flex-wrap gap-2.5">
               {images.map((img, i) => (
                 <div key={`${img}-${i}`} className="relative w-20 h-24 rounded-lg overflow-hidden border border-[#D8D2C7] dark:border-[#35322C]">
-                  <img src={img} alt="Preview" className="w-full h-full object-cover" />
+                  <img src={resolveAssetUrl(img)} alt="Preview" className="w-full h-full object-cover" />
                   <button
                     type="button"
                     onClick={() => setImages((prev) => prev.filter((_, idx) => idx !== i))}

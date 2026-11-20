@@ -3,7 +3,7 @@
   "appName": "Inaya Admin",
   "webDir": "dist",
   "server": {
-    "url": "https://demosite.com/admin",
+    "url": "https://geek-user99.github.io/Inaya_Fashion/admin",
     "androidScheme": "https"
   },
   "plugins": {

@@ -4,6 +4,7 @@ import type { Category, Product, PublicSettings, Review } from '../types';
 import { getRealisticViewerCount } from '../lib/visitors';
 import { trackMetaEvent } from '../lib/metaPixel';
 import { updatePageSeo } from '../lib/seo';
+import { resolveAssetUrl } from '../lib/paths';
 
 interface ProductDetailViewProps {
   product: Product;
@@ -146,7 +147,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
         <div className="lg:col-span-6 lg:sticky lg:top-24 space-y-3">
           <div className="aspect-[3/4] w-full overflow-hidden rounded-2xl bg-[#EFECE5] dark:bg-[#1C1A17] border border-[#E6E1D8] dark:border-[#272420]">
             <img
-              src={activeImage || product.images[0]}
+              src={resolveAssetUrl(activeImage || product.images[0] || '')}
               alt={`${product.name} - ${selectedColor}`}
               referrerPolicy="no-referrer"
               className="w-full h-full object-cover"
@@ -167,7 +168,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
                   }`}
                 >
                   <img
-                    src={img}
+                    src={resolveAssetUrl(img)}
                     alt={`${product.name} view ${i + 1}`}
                     referrerPolicy="no-referrer"
                     className="w-full h-full object-cover"

@@ -29,13 +29,6 @@ const SUPABASE_URL = process.env.SUPABASE_URL || 'https://mtngwbrcywmmxfwrumxb.s
 const SUPABASE_ANON_KEY =
   process.env.SUPABASE_ANON_KEY || 'sb_publishable_NWI2NHZk2lbI9HW9Qh0S0Q_TxR_WyEE';
 
-const SESSION_SECRET =
-  process.env.ADMIN_SESSION_SECRET ||
-  crypto
-    .createHash('sha256')
-    .update(`${SUPABASE_URL}:${process.env.ADMIN_PASSCODE || 'inaya-local-session-key'}`)
-    .digest('hex');
-
 const UPLOAD_DIR = path.resolve(process.cwd(), 'public', 'uploads');
 
 // SSE Subscribers for Real-Time Admin Order Notifications
@@ -64,32 +57,6 @@ function sanitizeSteadfastText(input: string, maxLen: number): string {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, maxLen);
-}
-
-function createSignedAdminToken(email: string): string {
-  const payload = Buffer.from(
-    JSON.stringify({ email, exp: Date.now() + 1000 * 60 * 60 * 24 * 7 })
-  ).toString('base64url');
-  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
-  return `${payload}.${sig}`;
-}
-
-function verifySignedAdminToken(token: string): { email: string } | null {
-  const parts = token.split('.');
-  if (parts.length !== 2) return null;
-  const [payload, sig] = parts;
-  const expected = crypto.createHmac('sha256', SESSION_SECRET).update(payload).digest('base64url');
-  try {
-    if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
-    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf-8')) as {
-      email: string;
-      exp: number;
-    };
-    if (!parsed.exp || Date.now() > parsed.exp) return null;
-    return { email: parsed.email };
-  } catch {
-    return null;
-  }
 }
 
 async function verifySupabaseJwt(token: string): Promise<{ email: string } | null> {
@@ -126,19 +93,10 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction) {
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : queryToken;
 
   if (!token) {
-    res.status(401).json({ error: 'Authentication required' });
+    res.status(401).json({ error: 'Authentication required. Sign in with Supabase Auth.' });
     return;
   }
 
-  // 1. Check server-signed admin session token
-  const signed = verifySignedAdminToken(token);
-  if (signed) {
-    (req as Request & { adminEmail?: string }).adminEmail = signed.email;
-    next();
-    return;
-  }
-
-  // 2. Check live Supabase JWT
   const supaUser = await verifySupabaseJwt(token);
   if (supaUser) {
     (req as Request & { adminEmail?: string }).adminEmail = supaUser.email;
@@ -146,7 +104,7 @@ async function requireAdmin(req: Request, res: Response, next: NextFunction) {
     return;
   }
 
-  res.status(401).json({ error: 'Invalid or expired admin session' });
+  res.status(401).json({ error: 'Invalid or expired Supabase session' });
 }
 
 function sha256Hex(val: string): string {
@@ -615,45 +573,7 @@ ${urls
   });
 
   // ===========================================================================
-  // ADMIN AUTHENTICATION
-  // ===========================================================================
-  app.post('/api/admin/auth/passcode', (req, res) => {
-    const ip = req.ip || 'unknown';
-    if (!checkRateLimit(`login:${ip}`, 10)) {
-      res.status(429).json({ error: 'Too many login attempts. Try again in a minute.' });
-      return;
-    }
-
-    const { passcode } = req.body as { passcode?: string };
-    const configuredPasscode = process.env.ADMIN_PASSCODE;
-
-    // In production, if ADMIN_PASSCODE isn't explicitly configured, require Supabase Auth only
-    if (process.env.NODE_ENV === 'production' && !configuredPasscode) {
-      res.status(403).json({
-        error: 'Passcode login disabled in production. Sign in using your Supabase Admin account.',
-      });
-      return;
-    }
-
-    const expectedPasscode = configuredPasscode || 'inaya2026';
-    if (!passcode || passcode !== expectedPasscode) {
-      res.status(401).json({ error: 'Incorrect store passcode.' });
-      return;
-    }
-
-    const token = createSignedAdminToken('admin@inayafashion.com');
-    res.json({ token, email: 'admin@inayafashion.com' });
-  });
-
-  app.get('/api/admin/auth/config', (_req, res) => {
-    res.json({
-      passcodeEnabled: process.env.NODE_ENV !== 'production' || Boolean(process.env.ADMIN_PASSCODE),
-      isPreviewMode: process.env.NODE_ENV !== 'production' && !process.env.ADMIN_PASSCODE,
-    });
-  });
-
-  // ===========================================================================
-  // PROTECTED ADMIN ROUTES
+  // PROTECTED ADMIN ROUTES (Supabase Auth Only)
   // ===========================================================================
   app.get('/api/admin/events', requireAdmin, (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');

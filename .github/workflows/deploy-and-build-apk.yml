@@ -22,21 +22,29 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        run: npm install --no-audit --no-fund
+        run: npm install --legacy-peer-deps --no-audit --no-fund
 
       - name: Type-check & Build Production Bundle
         env:
           VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
           VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_BASE_PATH: ${{ vars.VITE_BASE_PATH || '/Inaya_Fashion/' }}
         run: |
           npm run lint
           npm run build
+          cp dist/index.html dist/404.html
 
       - name: Upload Web Dist Artifact
         uses: actions/upload-artifact@v4
         with:
           name: web-dist
           path: dist/
+
+      - name: Deploy to GitHub Pages (gh-pages branch)
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
 
       - name: Deploy to Vercel or Trigger Host Webhook (if configured)
         env:
@@ -50,7 +58,7 @@ jobs:
             echo "Triggering server deploy webhook..."
             curl -fsSL -X POST "$DEPLOY_WEBHOOK_URL"
           else
-            echo "No deployment secret set yet — skipping remote deploy step (build succeeded)."
+            echo "Deployed to GitHub Pages branch (no Vercel/Webhook secret configured)."
           fi
 
   build-admin-apk:
@@ -80,12 +88,12 @@ jobs:
 
       - name: Install Capacitor & Android Plugins
         run: |
-          npm install --no-audit --no-fund
-          npm install --no-save @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/local-notifications@6 @capacitor-community/bluetooth-le@6
+          npm install --legacy-peer-deps --no-audit --no-fund
+          npm install --legacy-peer-deps --no-save @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/local-notifications@6 @capacitor-community/bluetooth-le@6
 
       - name: Configure Admin URL & Sync Android Project
         env:
-          CAPACITOR_ADMIN_URL: ${{ secrets.CAPACITOR_ADMIN_URL }}
+          CAPACITOR_ADMIN_URL: ${{ secrets.CAPACITOR_ADMIN_URL || 'https://geek-user99.github.io/Inaya_Fashion/admin' }}
         run: |
           node -e '
             const fs = require("fs");
@@ -150,4 +158,4 @@ jobs:
           name: Inaya Fashion Admin APK (Latest)
           files: Inaya-Admin.apk
           make_latest: true
-          body: "Automatically built Android APK pointing to your /admin panel with native notifications and Bluetooth thermal printer support."
+          body: "Automatically built Android APK pointing to https://geek-user99.github.io/Inaya_Fashion/admin with native notifications and Bluetooth thermal printer support."

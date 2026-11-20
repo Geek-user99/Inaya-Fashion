@@ -10,6 +10,8 @@ import { CartDrawer } from './components/CartDrawer';
 import { AdminApp } from './components/AdminApp';
 import { initMetaPixel } from './lib/metaPixel';
 import { updatePageSeo } from './lib/seo';
+import { resolveAssetUrl, stripBasePath, withBasePath } from './lib/paths';
+import { fetchStorefrontFromSupabaseFallback, tryExpressApi } from './lib/fallbackStorefront';
 
 const DEFAULT_SETTINGS: PublicSettings = {
   storeName: 'Inaya Fashion',
@@ -31,7 +33,7 @@ const DEFAULT_SETTINGS: PublicSettings = {
 };
 
 export default function App() {
-  const [pathname, setPathname] = useState<string>(() => window.location.pathname || '/');
+  const [pathname, setPathname] = useState<string>(() => stripBasePath(window.location.pathname));
   const [darkMode, setDarkMode] = useState<boolean>(() => {
     const saved = localStorage.getItem('inaya_theme');
     return saved === 'dark'; // Default Light Mode
@@ -74,21 +76,29 @@ export default function App() {
 
   const fetchStorefront = useCallback(async () => {
     try {
-      const resp = await fetch('/api/storefront');
-      if (!resp.ok) return;
-      const data = (await resp.json()) as {
-        settings: PublicSettings;
-        categories: Category[];
-        products: Product[];
-        reviews: Review[];
-      };
-      setSettings(data.settings);
-      setCategories(data.categories);
-      setProducts(data.products);
-      setReviews(data.reviews);
-      if (data.settings.metaPixelId) {
-        initMetaPixel(data.settings.metaPixelId);
+      const resp = await tryExpressApi('/api/storefront');
+      if (resp && resp.ok) {
+        const data = (await resp.json()) as {
+          settings: PublicSettings;
+          categories: Category[];
+          products: Product[];
+          reviews: Review[];
+        };
+        setSettings(data.settings);
+        setCategories(data.categories);
+        setProducts(data.products);
+        setReviews(data.reviews);
+        if (data.settings.metaPixelId) {
+          initMetaPixel(data.settings.metaPixelId);
+        }
+        return;
       }
+
+      const fallback = await fetchStorefrontFromSupabaseFallback(DEFAULT_SETTINGS);
+      setSettings(fallback.settings);
+      setCategories(fallback.categories);
+      setProducts(fallback.products);
+      setReviews(fallback.reviews);
     } finally {
       setLoading(false);
     }
@@ -98,18 +108,20 @@ export default function App() {
     void fetchStorefront();
   }, [fetchStorefront]);
 
-  // Clean SPA Permalink Routing
+  // Clean SPA Permalink Routing (works on / AND /Inaya_Fashion/)
   const navigate = useCallback((to: string) => {
-    if (window.location.pathname !== to) {
-      window.history.pushState({}, '', to);
+    const cleanRoute = stripBasePath(to);
+    const fullTarget = withBasePath(cleanRoute);
+    if (window.location.pathname !== fullTarget) {
+      window.history.pushState({}, '', fullTarget);
     }
-    setPathname(to);
+    setPathname(cleanRoute);
     setMobileMenuOpen(false);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
   useEffect(() => {
-    const handlePop = () => setPathname(window.location.pathname || '/');
+    const handlePop = () => setPathname(stripBasePath(window.location.pathname));
     window.addEventListener('popstate', handlePop);
     return () => window.removeEventListener('popstate', handlePop);
   }, []);
@@ -451,7 +463,7 @@ export default function App() {
                 className="max-w-[1600px] mx-auto"
               >
                 <img
-                  src="/src/assets/images/inaya_hero_expanded_1795190724222.jpg"
+                  src={resolveAssetUrl('/src/assets/images/inaya_hero_expanded_1795190724222.jpg')}
                   alt="Inaya Fashion Ribbed Knitwear and Tailored Flare Pants"
                   className="w-full h-auto block object-contain"
                 />

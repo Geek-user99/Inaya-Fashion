@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import type { Category, Product } from '../types';
+import { resolveAssetUrl } from '../lib/paths';
 
 interface ProductCardProps {
   product: Product;
@@ -18,7 +19,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({
   const [activeImageIdx, setActiveImageIdx] = useState(0);
   const [imgError, setImgError] = useState(false);
 
-  const primaryImg = product.images[activeImageIdx] || product.images[0] || '';
+  const primaryImg = resolveAssetUrl(product.images[activeImageIdx] || product.images[0] || '');
   const allSizesOut = product.sizes.length > 0 && product.sizes.every((s) => !s.inStock);
   const allColorsOut = product.colors.length > 0 && product.colors.every((c) => !c.inStock);
   const isSoldOut = !product.comingSoon && (allSizesOut || allColorsOut);
