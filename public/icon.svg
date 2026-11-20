@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#121110" />
+  <rect x="28" y="28" width="456" height="456" rx="76" fill="none" stroke="#C6A15B" stroke-opacity="0.35" stroke-width="4" />
+  <g transform="translate(256 236)" fill="#D9B675">
+    <circle cx="0" cy="-118" r="22" />
+    <path d="M-8 -90 C-26 -72 -32 -44 -20 -18 C-48 22 -84 82 -106 132 C-66 112 -28 84 -6 46 C-4 92 -20 130 -44 156 C-12 148 16 124 26 92 C42 122 68 144 102 152 C74 104 42 42 22 -18 C34 -44 26 -72 8 -90 Z" />
+  </g>
+  <text x="256" y="446" text-anchor="middle" font-family="Georgia, serif" font-size="42" letter-spacing="10" fill="#E5C88B" font-weight="600">INAYA</text>
+</svg>

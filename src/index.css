@@ -1,0 +1,93 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --font-display: 'Cormorant Garamond', Georgia, serif;
+    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+  }
+
+  html,
+  body {
+    font-family: var(--font-sans);
+    scroll-behavior: smooth;
+    overflow-x: clip;
+    max-width: 100%;
+  }
+
+  h1, h2, .font-display {
+    font-family: var(--font-display);
+  }
+
+  .font-mono-tabular {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Right-to-left continuous topbar marquee */
+@keyframes marquee-rtl {
+  0% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(-50%);
+  }
+}
+
+.animate-marquee-rtl {
+  display: flex;
+  width: max-content;
+  will-change: transform;
+  animation: marquee-rtl 30s linear infinite;
+}
+
+.animate-marquee-rtl:hover {
+  animation-play-state: paused;
+}
+
+.animate-reviews-rtl {
+  display: flex;
+  width: max-content;
+  will-change: transform;
+  animation: marquee-rtl 46s linear infinite;
+}
+
+.animate-reviews-rtl:hover {
+  animation-play-state: paused;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-marquee-rtl,
+  .animate-reviews-rtl {
+    animation: none;
+  }
+}
+
+/* Safe area padding for mobile admin app bottom bar */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Thermal label print formatting (58mm / 80mm sticker print) */
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+  #thermal-label-print-area,
+  #thermal-label-print-area * {
+    visibility: visible !important;
+  }
+  #thermal-label-print-area {
+    position: fixed !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 58mm !important;
+    padding: 4mm !important;
+    background: #ffffff !important;
+    color: #000000 !important;
+    box-shadow: none !important;
+    border: none !important;
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Inaya Fashion",
+  "description": "Contemporary ribbed knitwear and tailored essentials crafted for effortless everyday elegance across Bangladesh.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
