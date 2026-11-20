@@ -25,7 +25,7 @@ export default defineConfig(() => {
           background_color: '#FAF9F6',
           display: 'standalone',
           start_url: `${base}admin`,
-          scope: base,
+          scope: `${base}admin`,
           icons: [
             {
               src: `${base}pwa-192x192.png`,

@@ -5,7 +5,7 @@ import { BarcodeSvg } from './BarcodeSvg';
 import {
   connectThermalPrinter,
   getConnectedPrinterName,
-  isWebBluetoothSupported,
+  isAnyBluetoothSupported,
   printOrderToBluetoothThermal,
 } from '../lib/thermalPrinter';
 
@@ -158,7 +158,7 @@ export const BarcodeLabelModal: React.FC<BarcodeLabelModalProps> = ({ order, onC
                   ? 'Sending...'
                   : printerName
                   ? `Print (${printerName.slice(0, 12)})`
-                  : isWebBluetoothSupported()
+                  : isAnyBluetoothSupported()
                   ? 'Bluetooth Thermal Print'
                   : 'Pair Bluetooth Printer'}
               </span>

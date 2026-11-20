@@ -39,6 +39,7 @@ import {
 import {
   connectThermalPrinter,
   disconnectThermalPrinter,
+  getConnectedPrinterDebugInfo,
   getConnectedPrinterName,
   printTestThermalPage,
 } from '../lib/thermalPrinter';
@@ -47,7 +48,22 @@ import { PWAInstallButton } from './PWAInstallButton';
 import { AdminProductModal } from './AdminProductModal';
 import { BarcodeLabelModal } from './BarcodeLabelModal';
 import { apiUrl, resolveAssetUrl } from '../lib/paths';
-import { fetchAdminBootstrapSupabaseFallback, tryExpressApi } from '../lib/fallbackStorefront';
+import {
+  adminAddReviewFallback,
+  adminBookSteadfastSandboxFallback,
+  adminCreateCouponFallback,
+  adminDeleteCategoryFallback,
+  adminDeleteCouponFallback,
+  adminDeleteProductFallback,
+  adminDeleteReviewFallback,
+  adminReorderProductsFallback,
+  adminSaveCategoryFallback,
+  adminSaveProductFallback,
+  adminSaveSettingsFallback,
+  adminUpdateOrderStatusFallback,
+  fetchAdminBootstrapSupabaseFallback,
+  tryExpressApi,
+} from '../lib/fallbackStorefront';
 
 type AdminTab = 'orders' | 'products' | 'categories' | 'marketing' | 'system';
 
@@ -113,6 +129,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   const [cloudinarySecretInput, setCloudinarySecretInput] = useState('');
   const [steadfastBalance, setSteadfastBalance] = useState<number | null>(null);
   const [printerName, setPrinterName] = useState<string | null>(() => getConnectedPrinterName());
+  const [testingPrinter, setTestingPrinter] = useState(false);
   const [notifPerm, setNotifPerm] = useState<string>(() =>
     typeof Notification !== 'undefined' ? Notification.permission : 'unsupported'
   );
@@ -246,7 +263,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   const handleSendToSteadfast = async (orderId: string) => {
     setSendingSteadfastId(orderId);
     try {
-      const resp = await fetch(apiUrl('/api/admin/steadfast/create-order'), {
+      const resp = await tryExpressApi('/api/admin/steadfast/create-order', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -254,6 +271,27 @@ export const AdminApp: React.FC<AdminAppProps> = ({
         },
         body: JSON.stringify({ orderId }),
       });
+
+      if (!resp) {
+        const target = orders.find((o) => o.id === orderId);
+        if (!target) return;
+        if (!settings?.steadfastSandboxMode) {
+          showToast(
+            'err',
+            'Live Steadfast API requires the Express server backend. Enable Sandbox Mode to test booking on GitHub Pages.'
+          );
+          return;
+        }
+        const fallback = await adminBookSteadfastSandboxFallback(target);
+        if (fallback.error || !fallback.order) {
+          showToast('err', fallback.error || 'Sandbox booking failed.');
+          return;
+        }
+        setOrders((prev) => prev.map((o) => (o.id === orderId ? fallback.order! : o)));
+        showToast('ok', `Sandbox booked! CID: ${fallback.order.steadfastConsignmentId}`);
+        return;
+      }
+
       const data = (await resp.json()) as { order?: Order; message?: string; error?: string };
       if (!resp.ok || !data.order) {
         showToast('err', data.error || 'Steadfast booking failed.');
@@ -268,9 +306,14 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
   const handleSyncSteadfastStatus = async (orderId: string) => {
     try {
-      const resp = await fetch(apiUrl(`/api/admin/steadfast/status/${orderId}`), {
+      const resp = await tryExpressApi(`/api/admin/steadfast/status/${orderId}`, {
         headers: { Authorization: `Bearer ${authToken}` },
       });
+      if (!resp) {
+        const target = orders.find((o) => o.id === orderId);
+        showToast('ok', `Parcel status: ${target?.steadfastStatus || 'in_review'} (Sandbox)`);
+        return;
+      }
       const data = (await resp.json()) as { order?: Order; delivery_status?: string; error?: string };
       if (!resp.ok) {
         showToast('err', data.error || 'Status check failed');
@@ -287,9 +330,16 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
   const handleFraudCheck = async (orderId: string, phone: string) => {
     try {
-      const resp = await fetch(apiUrl(`/api/admin/steadfast/fraud-check/${encodeURIComponent(phone)}`), {
+      const resp = await tryExpressApi(`/api/admin/steadfast/fraud-check/${encodeURIComponent(phone)}`, {
         headers: { Authorization: `Bearer ${authToken}` },
       });
+      if (!resp) {
+        setFraudResults((prev) => ({
+          ...prev,
+          [orderId]: 'Sandbox Mode · Live courier score requires Express backend',
+        }));
+        return;
+      }
       const data = (await resp.json()) as {
         total_parcels?: number;
         delivered?: number;
@@ -311,7 +361,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   };
 
   const handleOrderStatusChange = async (orderId: string, orderStatus: OrderStatus) => {
-    const resp = await fetch(apiUrl(`/api/admin/orders/${orderId}/status`), {
+    const resp = await tryExpressApi(`/api/admin/orders/${orderId}/status`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
@@ -319,6 +369,16 @@ export const AdminApp: React.FC<AdminAppProps> = ({
       },
       body: JSON.stringify({ orderStatus }),
     });
+    if (!resp) {
+      const fallback = await adminUpdateOrderStatusFallback(orderId, orderStatus);
+      if (fallback.ok) {
+        setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, orderStatus } : o)));
+        showToast('ok', `Order updated to ${orderStatus}`);
+      } else {
+        showToast('err', fallback.error || 'Could not update order status.');
+      }
+      return;
+    }
     if (resp.ok) {
       setOrders((prev) => prev.map((o) => (o.id === orderId ? { ...o, orderStatus } : o)));
       showToast('ok', `Order updated to ${orderStatus}`);
@@ -333,7 +393,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     next.splice(targetIdx, 0, moved);
     const reindexed = next.map((p, i) => ({ ...p, displayOrder: i + 1 }));
     setProducts(reindexed);
-    await fetch(apiUrl('/api/admin/products/reorder'), {
+    const resp = await tryExpressApi('/api/admin/products/reorder', {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
@@ -341,11 +401,14 @@ export const AdminApp: React.FC<AdminAppProps> = ({
       },
       body: JSON.stringify({ orderedIds: reindexed.map((p) => p.id) }),
     });
+    if (!resp) {
+      await adminReorderProductsFallback(reindexed);
+    }
     onStorefrontDataChanged();
   };
 
   const handleQuickToggleProduct = async (product: Product, field: 'comingSoon' | 'showOnHomepage') => {
-    const resp = await fetch(apiUrl(`/api/admin/products/${product.id}`), {
+    const resp = await tryExpressApi(`/api/admin/products/${product.id}`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -353,6 +416,18 @@ export const AdminApp: React.FC<AdminAppProps> = ({
       },
       body: JSON.stringify({ [field]: !product[field] }),
     });
+    if (!resp) {
+      const updated = { ...product, [field]: !product[field] };
+      const fallback = await adminSaveProductFallback(updated);
+      if (fallback.product) {
+        setProducts((prev) => prev.map((p) => (p.id === product.id ? fallback.product! : p)));
+        onStorefrontDataChanged();
+        showToast('ok', `Updated ${product.name}`);
+      } else {
+        showToast('err', fallback.error || 'Failed to update product.');
+      }
+      return;
+    }
     if (resp.ok) {
       const data = (await resp.json()) as { product: Product };
       setProducts((prev) => prev.map((p) => (p.id === product.id ? data.product : p)));
@@ -362,10 +437,21 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   };
 
   const handleDeleteProduct = async (id: string) => {
-    const resp = await fetch(apiUrl(`/api/admin/products/${id}`), {
+    const resp = await tryExpressApi(`/api/admin/products/${id}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${authToken}` },
     });
+    if (!resp) {
+      const fallback = await adminDeleteProductFallback(id);
+      if (fallback.ok) {
+        setProducts((prev) => prev.filter((p) => p.id !== id));
+        onStorefrontDataChanged();
+        showToast('ok', 'Product removed.');
+      } else {
+        showToast('err', fallback.error || 'Failed to remove product.');
+      }
+      return;
+    }
     if (resp.ok) {
       setProducts((prev) => prev.filter((p) => p.id !== id));
       onStorefrontDataChanged();
@@ -378,7 +464,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     if (!catName.trim()) return;
     const url = editingCatId ? `/api/admin/categories/${editingCatId}` : '/api/admin/categories';
     const method = editingCatId ? 'PUT' : 'POST';
-    const resp = await fetch(apiUrl(url), {
+    const resp = await tryExpressApi(url, {
       method,
       headers: {
         'Content-Type': 'application/json',
@@ -386,6 +472,24 @@ export const AdminApp: React.FC<AdminAppProps> = ({
       },
       body: JSON.stringify({ name: catName, description: catDesc }),
     });
+    if (!resp) {
+      const fallback = await adminSaveCategoryFallback({
+        id: editingCatId,
+        name: catName,
+        description: catDesc,
+      });
+      if (!fallback.ok) {
+        showToast('err', fallback.error || 'Failed to save category.');
+        return;
+      }
+      setCatName('');
+      setCatDesc('');
+      setEditingCatId(null);
+      await loadBootstrap();
+      onStorefrontDataChanged();
+      showToast('ok', 'Category saved.');
+      return;
+    }
     if (resp.ok) {
       setCatName('');
       setCatDesc('');
@@ -397,10 +501,20 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   };
 
   const handleDeleteCategory = async (id: string) => {
-    const resp = await fetch(apiUrl(`/api/admin/categories/${id}`), {
+    const resp = await tryExpressApi(`/api/admin/categories/${id}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${authToken}` },
     });
+    if (!resp) {
+      const fallback = await adminDeleteCategoryFallback(id);
+      if (fallback.ok) {
+        setCategories((prev) => prev.filter((c) => c.id !== id));
+        onStorefrontDataChanged();
+      } else {
+        showToast('err', fallback.error || 'Failed to delete category.');
+      }
+      return;
+    }
     if (resp.ok) {
       setCategories((prev) => prev.filter((c) => c.id !== id));
       onStorefrontDataChanged();
@@ -409,20 +523,32 @@ export const AdminApp: React.FC<AdminAppProps> = ({
 
   const handleCreateCoupon = async (e: React.FormEvent) => {
     e.preventDefault();
-    const resp = await fetch(apiUrl('/api/admin/coupons'), {
+    const payload = {
+      code: couponCode,
+      discountType: couponType,
+      discountValue: Number(couponVal),
+      minOrderAmount: Number(couponMin),
+      active: true,
+    };
+    const resp = await tryExpressApi('/api/admin/coupons', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${authToken}`,
       },
-      body: JSON.stringify({
-        code: couponCode,
-        discountType: couponType,
-        discountValue: Number(couponVal),
-        minOrderAmount: Number(couponMin),
-        active: true,
-      }),
+      body: JSON.stringify(payload),
     });
+    if (!resp) {
+      const fallback = await adminCreateCouponFallback(payload);
+      if (!fallback.ok) {
+        showToast('err', fallback.error || 'Could not create coupon.');
+        return;
+      }
+      setCouponCode('');
+      await loadBootstrap();
+      showToast('ok', 'Coupon saved.');
+      return;
+    }
     if (resp.ok) {
       setCouponCode('');
       await loadBootstrap();
@@ -431,10 +557,17 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   };
 
   const handleDeleteCoupon = async (id: string) => {
-    const resp = await fetch(apiUrl(`/api/admin/coupons/${id}`), {
+    const resp = await tryExpressApi(`/api/admin/coupons/${id}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${authToken}` },
     });
+    if (!resp) {
+      const fallback = await adminDeleteCouponFallback(id);
+      if (fallback.ok) {
+        setCoupons((prev) => prev.filter((c) => c.id !== id));
+      }
+      return;
+    }
     if (resp.ok) {
       setCoupons((prev) => prev.filter((c) => c.id !== id));
     }
@@ -443,20 +576,34 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   const handleAddReview = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!revProdId || !revName.trim() || !revComment.trim()) return;
-    const resp = await fetch(apiUrl('/api/admin/reviews'), {
+    const payload = {
+      productId: revProdId,
+      reviewerName: revName,
+      location: revLocation,
+      rating: 5,
+      comment: revComment,
+    };
+    const resp = await tryExpressApi('/api/admin/reviews', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${authToken}`,
       },
-      body: JSON.stringify({
-        productId: revProdId,
-        reviewerName: revName,
-        location: revLocation,
-        rating: 5,
-        comment: revComment,
-      }),
+      body: JSON.stringify(payload),
     });
+    if (!resp) {
+      const fallback = await adminAddReviewFallback(payload);
+      if (!fallback.ok) {
+        showToast('err', fallback.error || 'Could not publish review.');
+        return;
+      }
+      setRevName('');
+      setRevComment('');
+      await loadBootstrap();
+      onStorefrontDataChanged();
+      showToast('ok', 'Review published.');
+      return;
+    }
     if (resp.ok) {
       setRevName('');
       setRevComment('');
@@ -467,10 +614,18 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   };
 
   const handleDeleteReview = async (id: string) => {
-    const resp = await fetch(apiUrl(`/api/admin/reviews/${id}`), {
+    const resp = await tryExpressApi(`/api/admin/reviews/${id}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${authToken}` },
     });
+    if (!resp) {
+      const fallback = await adminDeleteReviewFallback(id);
+      if (fallback.ok) {
+        setReviews((prev) => prev.filter((r) => r.id !== id));
+        onStorefrontDataChanged();
+      }
+      return;
+    }
     if (resp.ok) {
       setReviews((prev) => prev.filter((r) => r.id !== id));
       onStorefrontDataChanged();
@@ -488,7 +643,7 @@ export const AdminApp: React.FC<AdminAppProps> = ({
     if (metaCapiTokenInput.trim()) payload.metaCapiToken = metaCapiTokenInput.trim();
     if (cloudinarySecretInput.trim()) payload.cloudinaryApiSecret = cloudinarySecretInput.trim();
 
-    const resp = await fetch(apiUrl('/api/admin/settings'), {
+    const resp = await tryExpressApi('/api/admin/settings', {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
@@ -496,6 +651,16 @@ export const AdminApp: React.FC<AdminAppProps> = ({
       },
       body: JSON.stringify(payload),
     });
+    if (!resp) {
+      const fallback = await adminSaveSettingsFallback(settings);
+      if (!fallback.ok) {
+        showToast('err', fallback.error || 'Failed to save settings to Supabase.');
+        return;
+      }
+      onStorefrontDataChanged();
+      showToast('ok', 'Public store settings saved to Supabase.');
+      return;
+    }
     if (resp.ok) {
       const data = (await resp.json()) as { settings: AdminSettings };
       setSettings(data.settings);
@@ -511,9 +676,13 @@ export const AdminApp: React.FC<AdminAppProps> = ({
   };
 
   const handleCheckBalance = async () => {
-    const resp = await fetch(apiUrl('/api/admin/steadfast/balance'), {
+    const resp = await tryExpressApi('/api/admin/steadfast/balance', {
       headers: { Authorization: `Bearer ${authToken}` },
     });
+    if (!resp) {
+      showToast('ok', 'Sandbox Mode active — deploy Node server for live Steadfast wallet balance.');
+      return;
+    }
     const data = (await resp.json()) as { current_balance?: number; error?: string };
     if (resp.ok && data.current_balance !== undefined) {
       setSteadfastBalance(data.current_balance);
@@ -530,6 +699,18 @@ export const AdminApp: React.FC<AdminAppProps> = ({
       showToast('ok', `Connected to ${name}`);
     } catch (err) {
       showToast('err', err instanceof Error ? err.message : 'Bluetooth printer pairing failed.');
+    }
+  };
+
+  const handlePrintTestSticker = async () => {
+    setTestingPrinter(true);
+    try {
+      await printTestThermalPage();
+      showToast('ok', 'Test sticker sent to thermal printer!');
+    } catch (err) {
+      showToast('err', err instanceof Error ? err.message : 'Test print failed');
+    } finally {
+      setTestingPrinter(false);
     }
   };
 
@@ -1429,7 +1610,9 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                         </h2>
                         <p className="text-xs text-[#6E6A63] dark:text-[#A39E93] mt-0.5">
                           {printerName
-                            ? `Connected to ${printerName} — Ready for instant sticker printing.`
+                            ? `Connected to ${printerName}${
+                                getConnectedPrinterDebugInfo() ? ` (${getConnectedPrinterDebugInfo()})` : ''
+                              } — Ready for instant 58mm sticker printing.`
                             : 'Pair any portable BLE thermal printer to print Steadfast stickers directly from mobile or laptop.'}
                         </p>
                       </div>
@@ -1438,14 +1621,11 @@ export const AdminApp: React.FC<AdminAppProps> = ({
                           <>
                             <button
                               type="button"
-                              onClick={() =>
-                                printTestThermalPage().catch((err) =>
-                                  showToast('err', err instanceof Error ? err.message : 'Test print failed')
-                                )
-                              }
-                              className="min-h-[40px] px-3.5 rounded-xl bg-[#171614] dark:bg-[#D9B675] text-white dark:text-[#121110] text-xs font-semibold"
+                              disabled={testingPrinter}
+                              onClick={handlePrintTestSticker}
+                              className="min-h-[40px] px-3.5 rounded-xl bg-[#171614] dark:bg-[#D9B675] text-white dark:text-[#121110] text-xs font-semibold disabled:opacity-50"
                             >
-                              Print Test Sticker
+                              {testingPrinter ? 'Sending...' : 'Print Test Sticker'}
                             </button>
                             <button
                               type="button"
@@ -1659,6 +1839,8 @@ export const AdminApp: React.FC<AdminAppProps> = ({
           product={editingProduct}
           categories={categories}
           authToken={authToken}
+          cloudinaryCloudName={settings?.cloudinaryCloudName}
+          cloudinaryUploadPreset={settings?.cloudinaryUploadPreset}
           onClose={() => setEditingProduct(undefined)}
           onSaved={() => {
             setEditingProduct(undefined);

@@ -126,6 +126,16 @@ export default function App() {
     return () => window.removeEventListener('popstate', handlePop);
   }, []);
 
+  // Prevent mobile browser "Install App" mini-infobar popup on the customer storefront
+  useEffect(() => {
+    if (pathname.startsWith('/admin')) return;
+    const suppressStorefrontInstallPrompt = (e: Event) => {
+      e.preventDefault();
+    };
+    window.addEventListener('beforeinstallprompt', suppressStorefrontInstallPrompt);
+    return () => window.removeEventListener('beforeinstallprompt', suppressStorefrontInstallPrompt);
+  }, [pathname]);
+
   // Update SEO metadata for non-product routes
   useEffect(() => {
     if (pathname.startsWith('/product/')) return;

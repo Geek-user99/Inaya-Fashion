@@ -1,4 +1,4 @@
-import type { AdminSettings, Category, Coupon, Order, Product, PublicSettings, Review } from '../types';
+import type { AdminSettings, CartItem, Category, Coupon, Order, OrderItem, Product, PublicSettings, Review } from '../types';
 import { supabase } from './supabase';
 import { apiUrl } from './paths';
 
@@ -268,6 +268,27 @@ export const STATIC_REVIEWS: Review[] = [
   },
 ];
 
+const STATIC_COUPONS: Coupon[] = [
+  {
+    id: 'coup-1',
+    code: 'INAYA10',
+    discountType: 'percentage',
+    discountValue: 10,
+    minOrderAmount: 1200,
+    active: true,
+    expiresAt: '2026-12-31T23:59:59.000Z',
+  },
+  {
+    id: 'coup-2',
+    code: 'WINTER200',
+    discountType: 'fixed',
+    discountValue: 200,
+    minOrderAmount: 2000,
+    active: true,
+    expiresAt: '2026-12-31T23:59:59.000Z',
+  },
+];
+
 export async function isExpressApiJson(resp: Response): Promise<boolean> {
   const ct = resp.headers.get('content-type') || '';
   return resp.ok && ct.includes('application/json');
@@ -280,11 +301,27 @@ export async function fetchStorefrontFromSupabaseFallback(defaultSettings: Publi
   reviews: Review[];
 }> {
   try {
-    const [{ data: catRows }, { data: prodRows }, { data: revRows }] = await Promise.all([
+    const [{ data: catRows }, { data: prodRows }, { data: revRows }, { data: pubSettings }] = await Promise.all([
       supabase.from('categories').select('*').order('display_order'),
       supabase.from('products').select('*').order('display_order'),
       supabase.from('reviews').select('*').order('created_at', { ascending: false }),
+      supabase.rpc('get_public_store_settings'),
     ]);
+
+    const s = pubSettings as Record<string, unknown> | null;
+    const settings: PublicSettings = s
+      ? {
+          storeName: String(s.store_name || defaultSettings.storeName),
+          topbarEnabled: s.topbar_enabled !== undefined ? Boolean(s.topbar_enabled) : defaultSettings.topbarEnabled,
+          topbarText: String(s.topbar_text || defaultSettings.topbarText),
+          deliveryEnabled: s.delivery_enabled !== undefined ? Boolean(s.delivery_enabled) : defaultSettings.deliveryEnabled,
+          deliveryInsideDhaka: Number(s.delivery_inside_dhaka ?? defaultSettings.deliveryInsideDhaka),
+          deliveryOutsideDhaka: Number(s.delivery_outside_dhaka ?? defaultSettings.deliveryOutsideDhaka),
+          freeDeliveryThreshold: Number(s.free_delivery_threshold ?? defaultSettings.freeDeliveryThreshold),
+          socialLinks: (s.social_links as PublicSettings['socialLinks']) || defaultSettings.socialLinks,
+          metaPixelId: String(s.meta_pixel_id || ''),
+        }
+      : defaultSettings;
 
     const categories: Category[] =
       catRows && catRows.length > 0
@@ -332,7 +369,7 @@ export async function fetchStorefrontFromSupabaseFallback(defaultSettings: Publi
           }))
         : STATIC_REVIEWS;
 
-    return { settings: defaultSettings, categories, products, reviews };
+    return { settings, categories, products, reviews };
   } catch {
     return {
       settings: defaultSettings,
@@ -340,6 +377,276 @@ export async function fetchStorefrontFromSupabaseFallback(defaultSettings: Publi
       products: STATIC_PRODUCTS,
       reviews: STATIC_REVIEWS,
     };
+  }
+}
+
+export async function validateCouponFallback(
+  rawCode: string,
+  subtotal: number
+): Promise<{ valid: boolean; code?: string; discountAmount?: number; error?: string }> {
+  const cleanCode = rawCode.trim().toUpperCase();
+  if (!cleanCode) return { valid: false, error: 'Please enter a coupon code.' };
+
+  let coupon: Coupon | undefined;
+  try {
+    const { data } = await supabase
+      .from('coupons')
+      .select('*')
+      .eq('code', cleanCode)
+      .eq('active', true)
+      .maybeSingle();
+    if (data) {
+      coupon = {
+        id: String(data.id),
+        code: String(data.code),
+        discountType: data.discount_type === 'fixed' ? 'fixed' : 'percentage',
+        discountValue: Number(data.discount_value),
+        minOrderAmount: Number(data.min_order_amount || 0),
+        active: Boolean(data.active),
+        expiresAt: data.expires_at ? String(data.expires_at) : null,
+      };
+    }
+  } catch {
+    // ignore and check static fallback
+  }
+
+  if (!coupon) {
+    coupon = STATIC_COUPONS.find((c) => c.code === cleanCode && c.active);
+  }
+
+  if (!coupon) {
+    return { valid: false, error: 'Invalid or inactive coupon code.' };
+  }
+  if (coupon.expiresAt && new Date(coupon.expiresAt).getTime() < Date.now()) {
+    return { valid: false, error: 'This coupon has expired.' };
+  }
+  if (subtotal < coupon.minOrderAmount) {
+    return {
+      valid: false,
+      error: `Minimum order of ৳${coupon.minOrderAmount.toLocaleString()} required for ${coupon.code}.`,
+    };
+  }
+
+  const discountAmount =
+    coupon.discountType === 'percentage'
+      ? Math.round((subtotal * coupon.discountValue) / 100)
+      : Math.min(subtotal, coupon.discountValue);
+
+  return { valid: true, code: coupon.code, discountAmount };
+}
+
+export async function createOrderFallback(params: {
+  customerName: string;
+  customerPhone: string;
+  customerAddress: string;
+  deliveryZone: 'inside_dhaka' | 'outside_dhaka';
+  note: string;
+  couponCode: string;
+  items: CartItem[];
+  settings: PublicSettings;
+}): Promise<{ order?: Order; error?: string }> {
+  const cleanPhone = params.customerPhone.replace(/[^0-9+]/g, '');
+  if (!params.customerName.trim() || !params.customerAddress.trim()) {
+    return { error: 'Name, mobile number, and delivery address are required.' };
+  }
+  if (cleanPhone.length < 10) {
+    return { error: 'Please enter a valid Bangladesh mobile number (e.g. 017XXXXXXXX).' };
+  }
+  if (params.items.length === 0) {
+    return { error: 'Your shopping bag is empty.' };
+  }
+
+  const orderItems: OrderItem[] = params.items.map((i) => ({
+    productId: i.productId,
+    productName: i.name,
+    productSlug: i.slug,
+    image: i.image,
+    size: i.size,
+    color: i.color,
+    price: i.price,
+    quantity: i.quantity,
+  }));
+
+  const subtotal = orderItems.reduce((sum, i) => sum + i.price * i.quantity, 0);
+  let discountAmount = 0;
+  let appliedCode: string | null = null;
+  if (params.couponCode.trim()) {
+    const res = await validateCouponFallback(params.couponCode, subtotal);
+    if (res.valid && res.code && res.discountAmount) {
+      appliedCode = res.code;
+      discountAmount = res.discountAmount;
+    }
+  }
+
+  const afterDiscount = Math.max(0, subtotal - discountAmount);
+  let deliveryCharge = 0;
+  if (params.settings.deliveryEnabled) {
+    if (params.settings.freeDeliveryThreshold > 0 && afterDiscount >= params.settings.freeDeliveryThreshold) {
+      deliveryCharge = 0;
+    } else {
+      deliveryCharge =
+        params.deliveryZone === 'inside_dhaka'
+          ? params.settings.deliveryInsideDhaka
+          : params.settings.deliveryOutsideDhaka;
+    }
+  }
+
+  const now = new Date();
+  const dateStamp = `${String(now.getFullYear()).slice(2)}${String(now.getMonth() + 1).padStart(2, '0')}${String(
+    now.getDate()
+  ).padStart(2, '0')}`;
+  const randSuffix = Math.floor(1000 + Math.random() * 9000);
+  const invoice = `INY-${dateStamp}-${randSuffix}`;
+
+  const newOrder: Order = {
+    id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `ord-${Date.now()}`,
+    invoice,
+    customerName: params.customerName.trim(),
+    customerPhone: cleanPhone,
+    customerAddress: params.customerAddress.trim(),
+    deliveryZone: params.deliveryZone,
+    note: params.note.trim(),
+    items: orderItems,
+    subtotal,
+    discountAmount,
+    couponCode: appliedCode,
+    deliveryCharge,
+    totalAmount: afterDiscount + deliveryCharge,
+    orderStatus: 'pending',
+    steadfastConsignmentId: null,
+    steadfastTrackingCode: null,
+    steadfastStatus: null,
+    steadfastSentAt: null,
+    createdAt: now.toISOString(),
+  };
+
+  try {
+    const { error } = await supabase.from('orders').insert({
+      id: newOrder.id,
+      invoice: newOrder.invoice,
+      customer_name: newOrder.customerName,
+      customer_phone: newOrder.customerPhone,
+      customer_address: newOrder.customerAddress,
+      delivery_zone: newOrder.deliveryZone,
+      note: newOrder.note,
+      items: newOrder.items,
+      subtotal: newOrder.subtotal,
+      discount_amount: newOrder.discountAmount,
+      coupon_code: newOrder.couponCode,
+      delivery_charge: newOrder.deliveryCharge,
+      total_amount: newOrder.totalAmount,
+      order_status: newOrder.orderStatus,
+      created_at: newOrder.createdAt,
+    });
+
+    if (error) {
+      if (error.code === '42501') {
+        return {
+          error:
+            'Database order permission not enabled yet. Please run the updated supabase/schema.sql in Supabase SQL Editor.',
+        };
+      }
+      return { error: error.message || 'Could not save order to database.' };
+    }
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'Unable to reach order database.' };
+  }
+
+  try {
+    const existingRaw = localStorage.getItem('inaya_local_orders');
+    const existing = existingRaw ? (JSON.parse(existingRaw) as Order[]) : [];
+    localStorage.setItem('inaya_local_orders', JSON.stringify([newOrder, ...existing].slice(0, 20)));
+  } catch {
+    // ignore storage errors
+  }
+
+  return { order: newOrder };
+}
+
+export async function trackOrderFallback(lookupQuery: string): Promise<{
+  order?: {
+    invoice: string;
+    customerName: string;
+    deliveryZone: string;
+    items: OrderItem[];
+    totalAmount: number;
+    orderStatus: string;
+    steadfastConsignmentId?: string | null;
+    steadfastTrackingCode?: string | null;
+    steadfastStatus?: string | null;
+    createdAt: string;
+  };
+  error?: string;
+}> {
+  try {
+    const { data, error } = await supabase.rpc('track_order_public', {
+      lookup_query: lookupQuery.trim(),
+    });
+    if (!error && data) {
+      const r = data as Record<string, unknown>;
+      return {
+        order: {
+          invoice: String(r.invoice),
+          customerName: String(r.customer_name),
+          deliveryZone: String(r.delivery_zone),
+          items: Array.isArray(r.items) ? (r.items as OrderItem[]) : [],
+          totalAmount: Number(r.total_amount),
+          orderStatus: String(r.order_status),
+          steadfastConsignmentId: r.steadfast_consignment_id ? String(r.steadfast_consignment_id) : null,
+          steadfastTrackingCode: r.steadfast_tracking_code ? String(r.steadfast_tracking_code) : null,
+          steadfastStatus: r.steadfast_status ? String(r.steadfast_status) : null,
+          createdAt: String(r.created_at),
+        },
+      };
+    }
+  } catch {
+    // check local recent orders fallback
+  }
+
+  try {
+    const existingRaw = localStorage.getItem('inaya_local_orders');
+    const existing = existingRaw ? (JSON.parse(existingRaw) as Order[]) : [];
+    const q = lookupQuery.trim().toUpperCase();
+    const match = existing.find(
+      (o) => o.invoice.toUpperCase() === q || o.customerPhone.endsWith(lookupQuery.trim())
+    );
+    if (match) {
+      return {
+        order: {
+          invoice: match.invoice,
+          customerName: match.customerName,
+          deliveryZone: match.deliveryZone,
+          items: match.items,
+          totalAmount: match.totalAmount,
+          orderStatus: match.orderStatus,
+          steadfastConsignmentId: match.steadfastConsignmentId,
+          steadfastTrackingCode: match.steadfastTrackingCode,
+          steadfastStatus: match.steadfastStatus,
+          createdAt: match.createdAt,
+        },
+      };
+    }
+  } catch {
+    // ignore
+  }
+
+  return { error: 'No order found matching that invoice or phone number.' };
+}
+
+export async function submitReviewFallback(review: Review): Promise<void> {
+  try {
+    await supabase.from('reviews').insert({
+      id: review.id,
+      product_id: review.productId,
+      reviewer_name: review.reviewerName,
+      location: review.location,
+      rating: review.rating,
+      comment: review.comment,
+      verified_purchase: review.verifiedPurchase,
+      created_at: review.createdAt,
+    });
+  } catch {
+    // ignore
   }
 }
 
@@ -456,3 +763,304 @@ export async function tryExpressApi(endpoint: string, init?: RequestInit): Promi
     return null;
   }
 }
+
+export function isUuid(val: string | undefined | null): boolean {
+  return Boolean(val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val));
+}
+
+function slugifyText(input: string): string {
+  return input
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || `item-${Date.now()}`;
+}
+
+export async function adminUpdateOrderStatusFallback(
+  orderId: string,
+  orderStatus: Order['orderStatus']
+): Promise<{ ok: boolean; error?: string }> {
+  const { error } = await supabase.from('orders').update({ order_status: orderStatus }).eq('id', orderId);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+export async function adminBookSteadfastSandboxFallback(order: Order): Promise<{ order?: Order; error?: string }> {
+  const consignmentId = String(Math.floor(10000000 + Math.random() * 89999999));
+  const trackingCode = `SF${Math.floor(1000000 + Math.random() * 8999999)}BD`;
+  const sentAt = new Date().toISOString();
+  const { error } = await supabase
+    .from('orders')
+    .update({
+      steadfast_consignment_id: consignmentId,
+      steadfast_tracking_code: trackingCode,
+      steadfast_status: 'in_review',
+      steadfast_sent_at: sentAt,
+      order_status: 'confirmed',
+    })
+    .eq('id', order.id);
+
+  if (error) return { error: error.message };
+  return {
+    order: {
+      ...order,
+      steadfastConsignmentId: consignmentId,
+      steadfastTrackingCode: trackingCode,
+      steadfastStatus: 'in_review',
+      steadfastSentAt: sentAt,
+      orderStatus: 'confirmed',
+    },
+  };
+}
+
+export async function adminReorderProductsFallback(reindexed: Product[]): Promise<void> {
+  for (const p of reindexed) {
+    if (!isUuid(p.id)) continue;
+    await supabase.from('products').update({ display_order: p.displayOrder }).eq('id', p.id);
+  }
+}
+
+export async function adminSaveProductFallback(payload: {
+  id?: string;
+  name: string;
+  slug?: string;
+  categoryId?: string;
+  price: number;
+  compareAtPrice?: number | null;
+  description: string;
+  fabricCare: string;
+  images: string[];
+  sizes: Product['sizes'];
+  colors: Product['colors'];
+  comingSoon: boolean;
+  showOnHomepage: boolean;
+  displayOrder: number;
+}): Promise<{ product?: Product; error?: string }> {
+  const finalSlug = payload.slug ? slugifyText(payload.slug) : slugifyText(payload.name);
+  const rowPayload = {
+    name: payload.name.trim(),
+    slug: finalSlug,
+    category_id: isUuid(payload.categoryId) ? payload.categoryId : null,
+    description: payload.description || '',
+    fabric_care: payload.fabricCare || '',
+    price: Number(payload.price),
+    compare_at_price: payload.compareAtPrice ? Number(payload.compareAtPrice) : null,
+    images: payload.images || [],
+    sizes: payload.sizes || [],
+    colors: payload.colors || [],
+    coming_soon: Boolean(payload.comingSoon),
+    show_on_homepage: payload.showOnHomepage !== false,
+    display_order: Number(payload.displayOrder || 1),
+    updated_at: new Date().toISOString(),
+  };
+
+  if (payload.id && isUuid(payload.id)) {
+    const { data, error } = await supabase
+      .from('products')
+      .update(rowPayload)
+      .eq('id', payload.id)
+      .select()
+      .single();
+    if (error || !data) return { error: error?.message || 'Failed to update product in Supabase.' };
+    return {
+      product: {
+        id: String(data.id),
+        name: String(data.name),
+        slug: String(data.slug),
+        categoryId: String(data.category_id || ''),
+        description: String(data.description || ''),
+        fabricCare: String(data.fabric_care || ''),
+        price: Number(data.price),
+        compareAtPrice: data.compare_at_price ? Number(data.compare_at_price) : null,
+        images: Array.isArray(data.images) ? (data.images as string[]) : [],
+        sizes: Array.isArray(data.sizes) ? (data.sizes as Product['sizes']) : [],
+        colors: Array.isArray(data.colors) ? (data.colors as Product['colors']) : [],
+        comingSoon: Boolean(data.coming_soon),
+        showOnHomepage: data.show_on_homepage !== false,
+        displayOrder: Number(data.display_order || 1),
+        createdAt: String(data.created_at || new Date().toISOString()),
+      },
+    };
+  }
+
+  const { data, error } = await supabase.from('products').insert(rowPayload).select().single();
+  if (error || !data) return { error: error?.message || 'Failed to add product in Supabase.' };
+  return {
+    product: {
+      id: String(data.id),
+      name: String(data.name),
+      slug: String(data.slug),
+      categoryId: String(data.category_id || ''),
+      description: String(data.description || ''),
+      fabricCare: String(data.fabric_care || ''),
+      price: Number(data.price),
+      compareAtPrice: data.compare_at_price ? Number(data.compare_at_price) : null,
+      images: Array.isArray(data.images) ? (data.images as string[]) : [],
+      sizes: Array.isArray(data.sizes) ? (data.sizes as Product['sizes']) : [],
+      colors: Array.isArray(data.colors) ? (data.colors as Product['colors']) : [],
+      comingSoon: Boolean(data.coming_soon),
+      showOnHomepage: data.show_on_homepage !== false,
+      displayOrder: Number(data.display_order || 1),
+      createdAt: String(data.created_at || new Date().toISOString()),
+    },
+  };
+}
+
+export async function adminDeleteProductFallback(id: string): Promise<{ ok: boolean; error?: string }> {
+  if (!isUuid(id)) return { ok: true };
+  const { error } = await supabase.from('products').delete().eq('id', id);
+  if (error) return { ok: false, error: error.message };
+  return { ok: true };
+}
+
+export async function adminSaveCategoryFallback(payload: {
+  id?: string | null;
+  name: string;
+  description: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const row = {
+    name: payload.name.trim(),
+    slug: slugifyText(payload.name),
+    description: payload.description.trim(),
+  };
+  if (payload.id && isUuid(payload.id)) {
+    const { error } = await supabase.from('categories').update(row).eq('id', payload.id);
+    return error ? { ok: false, error: error.message } : { ok: true };
+  }
+  const { error } = await supabase.from('categories').insert(row);
+  return error ? { ok: false, error: error.message } : { ok: true };
+}
+
+export async function adminDeleteCategoryFallback(id: string): Promise<{ ok: boolean; error?: string }> {
+  if (!isUuid(id)) return { ok: true };
+  const { error } = await supabase.from('categories').delete().eq('id', id);
+  return error ? { ok: false, error: error.message } : { ok: true };
+}
+
+export async function adminCreateCouponFallback(payload: {
+  code: string;
+  discountType: 'percentage' | 'fixed';
+  discountValue: number;
+  minOrderAmount: number;
+}): Promise<{ ok: boolean; error?: string }> {
+  const { error } = await supabase.from('coupons').upsert(
+    {
+      code: payload.code.trim().toUpperCase(),
+      discount_type: payload.discountType,
+      discount_value: payload.discountValue,
+      min_order_amount: payload.minOrderAmount,
+      active: true,
+    },
+    { onConflict: 'code' }
+  );
+  return error ? { ok: false, error: error.message } : { ok: true };
+}
+
+export async function adminDeleteCouponFallback(id: string): Promise<{ ok: boolean; error?: string }> {
+  if (!isUuid(id)) return { ok: true };
+  const { error } = await supabase.from('coupons').delete().eq('id', id);
+  return error ? { ok: false, error: error.message } : { ok: true };
+}
+
+export async function adminAddReviewFallback(payload: {
+  productId: string;
+  reviewerName: string;
+  location: string;
+  rating: number;
+  comment: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const { error } = await supabase.from('reviews').insert({
+    product_id: isUuid(payload.productId) ? payload.productId : null,
+    reviewer_name: payload.reviewerName.trim(),
+    location: payload.location.trim() || 'Dhaka',
+    rating: payload.rating,
+    comment: payload.comment.trim(),
+    verified_purchase: true,
+  });
+  return error ? { ok: false, error: error.message } : { ok: true };
+}
+
+export async function adminDeleteReviewFallback(id: string): Promise<{ ok: boolean; error?: string }> {
+  if (!isUuid(id)) return { ok: true };
+  const { error } = await supabase.from('reviews').delete().eq('id', id);
+  return error ? { ok: false, error: error.message } : { ok: true };
+}
+
+export async function adminSaveSettingsFallback(settings: AdminSettings): Promise<{ ok: boolean; error?: string }> {
+  const { error } = await supabase.from('store_settings').upsert(
+    {
+      id: 1,
+      store_name: settings.storeName,
+      topbar_enabled: settings.topbarEnabled,
+      topbar_text: settings.topbarText,
+      delivery_enabled: settings.deliveryEnabled,
+      delivery_inside_dhaka: settings.deliveryInsideDhaka,
+      delivery_outside_dhaka: settings.deliveryOutsideDhaka,
+      free_delivery_threshold: settings.freeDeliveryThreshold,
+      social_links: settings.socialLinks,
+      meta_pixel_id: settings.metaPixelId,
+      meta_test_event_code: settings.metaTestEventCode,
+      steadfast_base_url: settings.steadfastBaseUrl,
+      steadfast_sandbox_mode: settings.steadfastSandboxMode,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: 'id' }
+  );
+  return error ? { ok: false, error: error.message } : { ok: true };
+}
+
+export async function uploadImageStaticFallback(
+  file: File,
+  cloudName?: string,
+  uploadPreset?: string
+): Promise<{ url: string; notice?: string }> {
+  if (cloudName && uploadPreset) {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('upload_preset', uploadPreset);
+    const resp = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/image/upload`, {
+      method: 'POST',
+      body: form,
+    });
+    if (resp.ok) {
+      const json = (await resp.json()) as { secure_url?: string };
+      if (json.secure_url) {
+        return { url: json.secure_url };
+      }
+    }
+  }
+
+  // Fallback: resize/compress nicely to max 900x1200 JPEG data URL for direct Supabase storage
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error('Failed to read image'));
+    reader.readAsDataURL(file);
+  });
+
+  const compressed = await new Promise<string>((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const maxW = 900;
+      const scale = img.width > maxW ? maxW / img.width : 1;
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(dataUrl);
+        return;
+      }
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', 0.82));
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+
+  return {
+    url: compressed,
+    notice: 'Saved optimized image directly (add an Unsigned Upload Preset in Courier/Media Settings for Cloudinary CDN upload on static hosting).',
+  };
+}
+

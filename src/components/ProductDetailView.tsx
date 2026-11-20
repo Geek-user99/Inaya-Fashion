@@ -5,6 +5,7 @@ import { getRealisticViewerCount } from '../lib/visitors';
 import { trackMetaEvent } from '../lib/metaPixel';
 import { updatePageSeo } from '../lib/seo';
 import { resolveAssetUrl } from '../lib/paths';
+import { submitReviewFallback, tryExpressApi } from '../lib/fallbackStorefront';
 
 interface ProductDetailViewProps {
   product: Product;
@@ -114,7 +115,7 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
     setSubmittingRev(true);
     try {
       const localRev: Review = {
-        id: `rev-${Date.now()}`,
+        id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `rev-${Date.now()}`,
         productId: product.id,
         reviewerName: revName.trim(),
         location: revLocation.trim() || 'Dhaka',
@@ -123,7 +124,18 @@ export const ProductDetailView: React.FC<ProductDetailViewProps> = ({
         verifiedPurchase: false,
         createdAt: new Date().toISOString(),
       };
-      onReviewAdded(localRev);
+      const resp = await tryExpressApi('/api/reviews', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(localRev),
+      });
+      if (resp && resp.ok) {
+        const data = (await resp.json()) as { review?: Review };
+        onReviewAdded(data.review || localRev);
+      } else {
+        await submitReviewFallback(localRev);
+        onReviewAdded(localRev);
+      }
       setRevName('');
       setRevLocation('');
       setRevComment('');

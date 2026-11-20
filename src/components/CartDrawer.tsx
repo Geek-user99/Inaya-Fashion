@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { Minus, Plus, ShoppingBag, Trash2, X, CheckCircle2, ArrowRight, Truck } from 'lucide-react';
 import type { CartItem, Order, PublicSettings } from '../types';
 import { trackMetaEvent } from '../lib/metaPixel';
-import { apiUrl, resolveAssetUrl } from '../lib/paths';
+import { resolveAssetUrl } from '../lib/paths';
+import { createOrderFallback, tryExpressApi, validateCouponFallback } from '../lib/fallbackStorefront';
 
 interface CartDrawerProps {
   open: boolean;
@@ -67,22 +68,34 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
     if (!couponInput.trim()) return;
     setValidatingCoupon(true);
     try {
-      const resp = await fetch(apiUrl('/api/coupons/validate'), {
+      const resp = await tryExpressApi('/api/coupons/validate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ code: couponInput.trim(), subtotal }),
       });
-      const data = (await resp.json()) as {
-        valid?: boolean;
-        code?: string;
-        discountAmount?: number;
-        error?: string;
-      };
-      if (!resp.ok || !data.valid || !data.code) {
-        setCouponError(data.error || 'Coupon could not be applied.');
+
+      if (resp) {
+        const data = (await resp.json()) as {
+          valid?: boolean;
+          code?: string;
+          discountAmount?: number;
+          error?: string;
+        };
+        if (!resp.ok || !data.valid || !data.code) {
+          setCouponError(data.error || 'Coupon could not be applied.');
+          setAppliedCoupon(null);
+        } else {
+          setAppliedCoupon({ code: data.code, discountAmount: data.discountAmount || 0 });
+        }
+        return;
+      }
+
+      const fallback = await validateCouponFallback(couponInput.trim(), subtotal);
+      if (!fallback.valid || !fallback.code) {
+        setCouponError(fallback.error || 'Coupon could not be applied.');
         setAppliedCoupon(null);
       } else {
-        setAppliedCoupon({ code: data.code, discountAmount: data.discountAmount || 0 });
+        setAppliedCoupon({ code: fallback.code, discountAmount: fallback.discountAmount || 0 });
       }
     } catch {
       setCouponError('Unable to verify coupon right now.');
@@ -105,7 +118,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
     setSubmitting(true);
     try {
       const eventId = `order-${Date.now()}`;
-      const resp = await fetch(apiUrl('/api/orders'), {
+      const resp = await tryExpressApi('/api/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -125,20 +138,45 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
           eventSourceUrl: window.location.href,
         }),
       });
-      const data = (await resp.json()) as { order?: Order; error?: string };
-      if (!resp.ok || !data.order) {
-        setCheckoutError(data.error || 'Could not place order. Please check your details.');
+
+      let placedOrder: Order | undefined;
+      let orderError: string | undefined;
+
+      if (resp) {
+        const data = (await resp.json()) as { order?: Order; error?: string };
+        if (!resp.ok || !data.order) {
+          orderError = data.error || 'Could not place order. Please check your details.';
+        } else {
+          placedOrder = data.order;
+        }
+      } else {
+        const fallback = await createOrderFallback({
+          customerName,
+          customerPhone,
+          customerAddress,
+          deliveryZone,
+          note,
+          couponCode: appliedCoupon?.code || '',
+          items,
+          settings,
+        });
+        placedOrder = fallback.order;
+        orderError = fallback.error;
+      }
+
+      if (!placedOrder) {
+        setCheckoutError(orderError || 'Could not place order. Please check your details.');
         return;
       }
 
       trackMetaEvent('Purchase', {
-        value: data.order.totalAmount,
+        value: placedOrder.totalAmount,
         contentIds: items.map((i) => i.productId),
-        eventId: data.order.invoice,
+        eventId: placedOrder.invoice,
       });
 
-      setConfirmedOrder(data.order);
-      onOrderCreated(data.order);
+      setConfirmedOrder(placedOrder);
+      onOrderCreated(placedOrder);
       onClearCart();
       setStep('success');
     } catch {

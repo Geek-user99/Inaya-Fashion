@@ -1,12 +1,19 @@
 import React, { useState } from 'react';
 import { Plus, Trash2, Upload, X, Image as ImageIcon } from 'lucide-react';
 import type { Category, ColorOption, Product, SizeOption } from '../types';
-import { apiUrl, resolveAssetUrl } from '../lib/paths';
+import { resolveAssetUrl } from '../lib/paths';
+import {
+  adminSaveProductFallback,
+  tryExpressApi,
+  uploadImageStaticFallback,
+} from '../lib/fallbackStorefront';
 
 interface AdminProductModalProps {
   product: Product | null;
   categories: Category[];
   authToken: string;
+  cloudinaryCloudName?: string;
+  cloudinaryUploadPreset?: string;
   onClose: () => void;
   onSaved: (product: Product) => void;
 }
@@ -15,6 +22,8 @@ export const AdminProductModal: React.FC<AdminProductModalProps> = ({
   product,
   categories,
   authToken,
+  cloudinaryCloudName,
+  cloudinaryUploadPreset,
   onClose,
   onSaved,
 }) => {
@@ -64,7 +73,7 @@ export const AdminProductModal: React.FC<AdminProductModalProps> = ({
         reader.readAsDataURL(file);
       });
 
-      const resp = await fetch(apiUrl('/api/admin/upload'), {
+      const resp = await tryExpressApi('/api/admin/upload', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -72,6 +81,17 @@ export const AdminProductModal: React.FC<AdminProductModalProps> = ({
         },
         body: JSON.stringify({ imageBase64: base64, fileName: file.name }),
       });
+
+      if (!resp) {
+        const fallback = await uploadImageStaticFallback(
+          file,
+          cloudinaryCloudName || 'djshdhau',
+          cloudinaryUploadPreset
+        );
+        if (fallback.notice) setUploadHint(fallback.notice);
+        return fallback.url;
+      }
+
       const data = (await resp.json()) as { url?: string; notice?: string; error?: string };
       if (!resp.ok || !data.url) {
         setError(data.error || 'Image upload failed');
@@ -111,30 +131,46 @@ export const AdminProductModal: React.FC<AdminProductModalProps> = ({
     setError('');
     setSaving(true);
     try {
+      const payload = {
+        name,
+        slug: slug.trim() || undefined,
+        categoryId,
+        price: Number(price),
+        compareAtPrice: compareAtPrice ? Number(compareAtPrice) : null,
+        description,
+        fabricCare,
+        images,
+        sizes,
+        colors,
+        comingSoon,
+        showOnHomepage,
+        displayOrder: Number(displayOrder || 1),
+      };
+
       const endpoint = product ? `/api/admin/products/${product.id}` : '/api/admin/products';
       const method = product ? 'PUT' : 'POST';
-      const resp = await fetch(apiUrl(endpoint), {
+      const resp = await tryExpressApi(endpoint, {
         method,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${authToken}`,
         },
-        body: JSON.stringify({
-          name,
-          slug: slug.trim() || undefined,
-          categoryId,
-          price: Number(price),
-          compareAtPrice: compareAtPrice ? Number(compareAtPrice) : null,
-          description,
-          fabricCare,
-          images,
-          sizes,
-          colors,
-          comingSoon,
-          showOnHomepage,
-          displayOrder: Number(displayOrder || 1),
-        }),
+        body: JSON.stringify(payload),
       });
+
+      if (!resp) {
+        const fallback = await adminSaveProductFallback({
+          id: product?.id,
+          ...payload,
+        });
+        if (fallback.error || !fallback.product) {
+          setError(fallback.error || 'Could not save product to Supabase.');
+          return;
+        }
+        onSaved(fallback.product);
+        return;
+      }
+
       const data = (await resp.json()) as { product?: Product; error?: string };
       if (!resp.ok || !data.product) {
         setError(data.error || 'Could not save product.');

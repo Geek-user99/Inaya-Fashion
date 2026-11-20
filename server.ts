@@ -572,6 +572,36 @@ ${urls
     res.json({ ok: true, result });
   });
 
+  app.post('/api/reviews', async (req, res) => {
+    const ip = req.ip || 'unknown';
+    if (!checkRateLimit(`review:${ip}`, 10)) {
+      res.status(429).json({ error: 'Too many review submissions. Please wait a minute.' });
+      return;
+    }
+    const { productId, reviewerName, location, rating, comment } = req.body as {
+      productId?: string;
+      reviewerName?: string;
+      location?: string;
+      rating?: number;
+      comment?: string;
+    };
+    if (!productId || !reviewerName?.trim() || !comment?.trim()) {
+      res.status(400).json({ error: 'Product, name, and review comment are required.' });
+      return;
+    }
+    const review = await saveReview({
+      id: crypto.randomUUID(),
+      productId,
+      reviewerName: reviewerName.trim().slice(0, 60),
+      location: (location?.trim() || 'Dhaka').slice(0, 60),
+      rating: Math.max(1, Math.min(5, Number(rating || 5))),
+      comment: comment.trim().slice(0, 500),
+      verifiedPurchase: false,
+      createdAt: new Date().toISOString(),
+    });
+    res.status(201).json({ review });
+  });
+
   // ===========================================================================
   // PROTECTED ADMIN ROUTES (Supabase Auth Only)
   // ===========================================================================

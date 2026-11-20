@@ -1,7 +1,8 @@
 -- ==============================================================================
--- INAYA FASHION — SUPABASE POSTGRESQL SCHEMA & ROW LEVEL SECURITY
+-- INAYA FASHION — SUPABASE POSTGRESQL SCHEMA, RLS POLICIES & PUBLIC RPCs
 -- Project ID: mtngwbrcywmmxfwrumxb
--- Run this script once in Supabase Dashboard -> SQL Editor
+-- Run this script in Supabase Dashboard -> SQL Editor
+-- (Safe to re-run multiple times)
 -- ==============================================================================
 
 create extension if not exists "pgcrypto";
@@ -112,17 +113,97 @@ alter table public.reviews enable row level security;
 alter table public.coupons enable row level security;
 alter table public.orders enable row level security;
 
--- Public Read Policies (Storefront)
+-- Public Storefront Policies (Idempotent)
+drop policy if exists "Public read categories" on public.categories;
 create policy "Public read categories" on public.categories for select using (true);
+
+drop policy if exists "Public read products" on public.products;
 create policy "Public read products" on public.products for select using (true);
+
+drop policy if exists "Public read reviews" on public.reviews;
 create policy "Public read reviews" on public.reviews for select using (true);
 
--- Note: store_settings & orders & coupons contain sensitive business data (API keys, customer PII).
--- All reads/writes for settings, coupons, and orders are routed strictly through our Express server
--- using SUPABASE_SERVICE_ROLE_KEY so secrets and customer PII never leak via browser anon key!
+drop policy if exists "Public insert reviews" on public.reviews;
+create policy "Public insert reviews" on public.reviews for insert to anon, authenticated with check (true);
+
+drop policy if exists "Public read active coupons" on public.coupons;
+create policy "Public read active coupons" on public.coupons for select to anon, authenticated using (active = true);
+
+drop policy if exists "Public create orders" on public.orders;
+create policy "Public create orders" on public.orders for insert to anon, authenticated with check (true);
+
+-- Authenticated Admin Policies (Supabase Auth)
+drop policy if exists "Authenticated admin full access categories" on public.categories;
 create policy "Authenticated admin full access categories" on public.categories for all to authenticated using (true) with check (true);
+
+drop policy if exists "Authenticated admin full access products" on public.products;
 create policy "Authenticated admin full access products" on public.products for all to authenticated using (true) with check (true);
+
+drop policy if exists "Authenticated admin full access reviews" on public.reviews;
 create policy "Authenticated admin full access reviews" on public.reviews for all to authenticated using (true) with check (true);
+
+drop policy if exists "Authenticated admin full access coupons" on public.coupons;
 create policy "Authenticated admin full access coupons" on public.coupons for all to authenticated using (true) with check (true);
+
+drop policy if exists "Authenticated admin full access orders" on public.orders;
 create policy "Authenticated admin full access orders" on public.orders for all to authenticated using (true) with check (true);
+
+drop policy if exists "Authenticated admin full access settings" on public.store_settings;
 create policy "Authenticated admin full access settings" on public.store_settings for all to authenticated using (true) with check (true);
+
+-- Safe Public Storefront RPC (never exposes Steadfast/Meta/Cloudinary secret keys)
+create or replace function public.get_public_store_settings()
+returns jsonb
+language sql
+security definer
+set search_path = public
+as $$
+  select to_jsonb(t)
+  from (
+    select
+      store_name,
+      topbar_enabled,
+      topbar_text,
+      delivery_enabled,
+      delivery_inside_dhaka,
+      delivery_outside_dhaka,
+      free_delivery_threshold,
+      social_links,
+      meta_pixel_id
+    from public.store_settings
+    where id = 1
+    limit 1
+  ) t;
+$$;
+
+grant execute on function public.get_public_store_settings() to anon, authenticated;
+
+-- Safe Public Order Tracking RPC (lookup by invoice or phone tail without exposing street address)
+create or replace function public.track_order_public(lookup_query text)
+returns jsonb
+language sql
+security definer
+set search_path = public
+as $$
+  select to_jsonb(t)
+  from (
+    select
+      invoice,
+      customer_name,
+      delivery_zone,
+      items,
+      total_amount,
+      order_status,
+      steadfast_consignment_id,
+      steadfast_tracking_code,
+      steadfast_status,
+      created_at
+    from public.orders
+    where upper(invoice) = upper(trim(lookup_query))
+       or right(regexp_replace(customer_phone, '[^0-9]', '', 'g'), 8) = right(regexp_replace(lookup_query, '[^0-9]', '', 'g'), 8)
+    order by created_at desc
+    limit 1
+  ) t;
+$$;
+
+grant execute on function public.track_order_public(text) to anon, authenticated;

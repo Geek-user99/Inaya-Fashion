@@ -377,6 +377,38 @@
   ],
   "orders": [
     {
+      "id": "70c83210-f2bc-4689-bb7e-5c0dd0969a7b",
+      "invoice": "INY-261120-2738",
+      "customerName": "Test Buyer",
+      "customerPhone": "01711223344",
+      "customerAddress": "Dhanmondi 27, Dhaka",
+      "deliveryZone": "inside_dhaka",
+      "note": "Test",
+      "items": [
+        {
+          "productId": "prod-turtleneck",
+          "productName": "Women's Ribbed Knit Turtleneck Sweater",
+          "productSlug": "womens-ribbed-knit-turtleneck-sweater",
+          "image": "/assets/aistudio/WhatsApp_Image_2026-11-20_at_11.14.18_AM_c76a128d.jpeg",
+          "size": "M",
+          "color": "Ivory Cream",
+          "price": 1350,
+          "quantity": 1
+        }
+      ],
+      "subtotal": 1350,
+      "discountAmount": 135,
+      "couponCode": "INAYA10",
+      "deliveryCharge": 70,
+      "totalAmount": 1285,
+      "orderStatus": "pending",
+      "steadfastConsignmentId": null,
+      "steadfastTrackingCode": null,
+      "steadfastStatus": null,
+      "steadfastSentAt": null,
+      "createdAt": "2026-11-20T18:00:40.496Z"
+    },
+    {
       "id": "ord-demo-1001",
       "invoice": "INY-261119-1001",
       "customerName": "Samira Rahman",

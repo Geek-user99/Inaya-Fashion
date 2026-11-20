@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { PackageSearch, Truck } from 'lucide-react';
 import type { OrderItem } from '../types';
-import { apiUrl } from '../lib/paths';
+import { trackOrderFallback, tryExpressApi } from '../lib/fallbackStorefront';
 
 interface TrackedOrderResult {
   invoice: string;
@@ -29,12 +29,22 @@ export const TrackOrderView: React.FC = () => {
     setError('');
     setResult(null);
     try {
-      const resp = await fetch(apiUrl(`/api/orders/track/${encodeURIComponent(query.trim())}`));
-      const data = (await resp.json()) as TrackedOrderResult & { error?: string };
-      if (!resp.ok) {
-        setError(data.error || 'Order not found.');
+      const resp = await tryExpressApi(`/api/orders/track/${encodeURIComponent(query.trim())}`);
+      if (resp) {
+        const data = (await resp.json()) as TrackedOrderResult & { error?: string };
+        if (!resp.ok) {
+          setError(data.error || 'Order not found.');
+        } else {
+          setResult(data);
+        }
+        return;
+      }
+
+      const fallback = await trackOrderFallback(query.trim());
+      if (fallback.order) {
+        setResult(fallback.order);
       } else {
-        setResult(data);
+        setError(fallback.error || 'Order not found.');
       }
     } catch {
       setError('Unable to check order status right now.');
