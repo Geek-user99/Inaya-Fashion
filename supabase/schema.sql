@@ -113,15 +113,40 @@ alter table public.reviews enable row level security;
 alter table public.coupons enable row level security;
 alter table public.orders enable row level security;
 
+-- Explicit Schema & Table Grants (Required on newer Supabase projects)
+grant usage on schema public to anon, authenticated;
+
+grant select on public.categories to anon;
+grant select on public.products to anon;
+grant select, insert on public.reviews to anon;
+grant select on public.coupons to anon;
+grant insert on public.orders to anon;
+
+grant select, insert, update, delete on public.store_settings to authenticated;
+grant select, insert, update, delete on public.categories to authenticated;
+grant select, insert, update, delete on public.products to authenticated;
+grant select, insert, update, delete on public.reviews to authenticated;
+grant select, insert, update, delete on public.coupons to authenticated;
+grant select, insert, update, delete on public.orders to authenticated;
+
+-- Seed default settings row & starter coupons safely
+insert into public.store_settings (id) values (1) on conflict (id) do nothing;
+
+insert into public.coupons (code, discount_type, discount_value, min_order_amount, active)
+values
+  ('INAYA10', 'percentage', 10, 1200, true),
+  ('WINTER200', 'fixed', 200, 2000, true)
+on conflict (code) do nothing;
+
 -- Public Storefront Policies (Idempotent)
 drop policy if exists "Public read categories" on public.categories;
-create policy "Public read categories" on public.categories for select using (true);
+create policy "Public read categories" on public.categories for select to anon, authenticated using (true);
 
 drop policy if exists "Public read products" on public.products;
-create policy "Public read products" on public.products for select using (true);
+create policy "Public read products" on public.products for select to anon, authenticated using (true);
 
 drop policy if exists "Public read reviews" on public.reviews;
-create policy "Public read reviews" on public.reviews for select using (true);
+create policy "Public read reviews" on public.reviews for select to anon, authenticated using (true);
 
 drop policy if exists "Public insert reviews" on public.reviews;
 create policy "Public insert reviews" on public.reviews for insert to anon, authenticated with check (true);

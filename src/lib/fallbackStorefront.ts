@@ -498,8 +498,19 @@ export async function createOrderFallback(params: {
   const randSuffix = Math.floor(1000 + Math.random() * 9000);
   const invoice = `INY-${dateStamp}-${randSuffix}`;
 
+  const fallbackUuid = () => {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (ch) => {
+      const r = (Math.random() * 16) | 0;
+      const v = ch === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  };
+
   const newOrder: Order = {
-    id: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `ord-${Date.now()}`,
+    id: fallbackUuid(),
     invoice,
     customerName: params.customerName.trim(),
     customerPhone: cleanPhone,
@@ -507,11 +518,11 @@ export async function createOrderFallback(params: {
     deliveryZone: params.deliveryZone,
     note: params.note.trim(),
     items: orderItems,
-    subtotal,
-    discountAmount,
+    subtotal: Math.round(subtotal),
+    discountAmount: Math.round(discountAmount),
     couponCode: appliedCode,
-    deliveryCharge,
-    totalAmount: afterDiscount + deliveryCharge,
+    deliveryCharge: Math.round(deliveryCharge),
+    totalAmount: Math.round(afterDiscount + deliveryCharge),
     orderStatus: 'pending',
     steadfastConsignmentId: null,
     steadfastTrackingCode: null,
@@ -543,7 +554,7 @@ export async function createOrderFallback(params: {
       if (error.code === '42501') {
         return {
           error:
-            'Database order permission not enabled yet. Please run the updated supabase/schema.sql in Supabase SQL Editor.',
+            'Supabase table GRANT missing for anon role. Please run the updated supabase/schema.sql (with GRANT INSERT ON public.orders TO anon) in Supabase SQL Editor.',
         };
       }
       return { error: error.message || 'Could not save order to database.' };
